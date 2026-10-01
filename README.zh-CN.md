@@ -6,6 +6,7 @@
 
 [English](./README.md) · 简体中文
 
+[![npm](https://img.shields.io/npm/v/@linys77/pi-translate?style=flat-square)](https://www.npmjs.com/package/@linys77/pi-translate)
 [![license](https://img.shields.io/badge/license-MIT-64748b?style=flat-square)](LICENSE)
 
 </div>
@@ -14,20 +15,15 @@
 
 ```bash
 # 单次试用
-pi -e git:github.com/LinYS77/pi-translate
+pi -e npm:@linys77/pi-translate
 
 # 或永久安装
-pi install git:github.com/LinYS77/pi-translate
+pi install npm:@linys77/pi-translate
 ```
 
 重启 Pi，或执行 `/reload`。
 
-npm 包以 **`@linys77/pi-translate`** 准备发布，目前尚未首发。发布后可使用：
-
-```bash
-pi install npm:@linys77/pi-translate
-```
-
+也支持 Git 安装：`pi install git:github.com/LinYS77/pi-translate`。
 只保留一种安装来源。切换到 npm 前，先移除已有的 Git / 本地安装。
 
 ## 功能
@@ -61,11 +57,10 @@ pi install npm:@linys77/pi-translate
 ## 更新
 
 ```bash
-pi update git:github.com/LinYS77/pi-translate
-# 发布后，如使用 npm 安装：
 pi update npm:@linys77/pi-translate
 ```
 
+Git 安装使用 `pi update git:github.com/LinYS77/pi-translate`。
 本地开发安装直接引用项目目录，修改后执行 `/reload`。
 
 ## 开发

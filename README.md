@@ -6,6 +6,7 @@
 
 English · [简体中文](./README.zh-CN.md)
 
+[![npm](https://img.shields.io/npm/v/@linys77/pi-translate?style=flat-square)](https://www.npmjs.com/package/@linys77/pi-translate)
 [![license](https://img.shields.io/badge/license-MIT-64748b?style=flat-square)](LICENSE)
 
 </div>
@@ -14,20 +15,15 @@ English · [简体中文](./README.zh-CN.md)
 
 ```bash
 # Try it for one session
-pi -e git:github.com/LinYS77/pi-translate
+pi -e npm:@linys77/pi-translate
 
 # Or install it
-pi install git:github.com/LinYS77/pi-translate
+pi install npm:@linys77/pi-translate
 ```
 
 Restart Pi or run `/reload`.
 
-The npm package is prepared as **`@linys77/pi-translate`**; its first release is pending. After publication:
-
-```bash
-pi install npm:@linys77/pi-translate
-```
-
+Git installation is also supported: `pi install git:github.com/LinYS77/pi-translate`.
 Use one installation source. Remove an existing Git/local install before switching to npm.
 
 ## Features
@@ -61,11 +57,10 @@ Details: [configuration and behavior](docs/behavior.md) · [manual checks](https
 ## Update
 
 ```bash
-pi update git:github.com/LinYS77/pi-translate
-# For an npm installation, after publication:
 pi update npm:@linys77/pi-translate
 ```
 
+Git installs use `pi update git:github.com/LinYS77/pi-translate`.
 Local development installs reference their directory directly; use `/reload` after editing.
 
 ## Contributing
