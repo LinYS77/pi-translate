@@ -30,12 +30,22 @@ export async function harness(translateText?: typeof translate, overrides: Parti
   const entries: { type: string; customType: string; data: any }[] = [];
   const notifications: string[] = [];
   const calls: { text: string; direction: string; config: Config }[] = [];
+  const choices: (number | string | undefined)[] = [];
+  const modelChoices: (Model<Api> | undefined)[] = [];
+  const dialogs: { title: string; options: string[] }[] = [];
+  let modelPickerCalls = 0;
   let editor = "";
   let status = "";
   let keyHandler: ((data: string) => unknown) | undefined;
   const ctx = {
-    mode: "tui", hasUI: true, signal: undefined,
+    mode: "tui", hasUI: true, signal: undefined, model: { ...model, provider: "main", id: "large" },
     ui: {
+      select: async (title: string, options: string[]) => {
+        dialogs.push({ title, options });
+        const choice = choices.shift();
+        return typeof choice === "number" ? options[choice] : choice;
+      },
+      custom: async () => { modelPickerCalls++; return modelChoices.shift(); },
       setStatus: (_key: string, value: string) => { status = value; },
       notify: (value: string) => notifications.push(value),
       getEditorText: () => editor,
@@ -43,7 +53,10 @@ export async function harness(translateText?: typeof translate, overrides: Parti
       onTerminalInput: (fn: typeof keyHandler) => { keyHandler = fn; return () => { keyHandler = undefined; }; },
     },
     sessionManager: { getBranch: () => entries },
-    modelRegistry: { find: () => model },
+    modelRegistry: {
+      find: () => model, getAvailable: () => [model], getError: () => undefined,
+      refresh: async () => ({ aborted: false, errors: new Map() }),
+    },
   } as unknown as ExtensionContext;
   const pi = {
     on: (name: string, handler: any) => { handlers.set(name, [...(handlers.get(name) ?? []), handler]); },
@@ -62,7 +75,8 @@ export async function harness(translateText?: typeof translate, overrides: Parti
   };
   await emit("session_start");
   return {
-    ctx, pi, entries, calls, notifications, emit, dir,
+    ctx, pi, entries, calls, notifications, emit, dir, choices, modelChoices, dialogs,
+    get modelPickerCalls() { return modelPickerCalls; },
     get editor() { return editor; }, set editor(value: string) { editor = value; },
     get status() { return status; },
     key: (data: string) => keyHandler?.(data),

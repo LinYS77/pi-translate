@@ -14,7 +14,7 @@ test("disabled is transparent, shortcut toggles status without dialogs", async (
     assert.deepEqual(await h.start("原样输入"), { action: "continue" });
     await h.turn(); await h.settle();
     assert.equal(h.calls.length, 0); assert.equal(h.entries.length, 0);
-    await h.toggle(); assert.match(h.status, /译 开/);
+    await h.toggle(); assert.match(h.status, /译 on/);
     assert.equal(h.notifications.length, 0);
   } finally { await h.close(); }
 });
@@ -48,7 +48,7 @@ test("run snapshot survives toggles, queued prompts, retries and further boundar
   const h = await harness();
   try {
     await h.start(); await h.toggle();
-    assert.match(h.status, /本任务开/);
+    assert.match(h.status, /本任务 on/);
     assert.deepEqual(await h.input("不要训练", { streamingBehavior: "steer" }), { action: "continue" });
     await h.turn(assistant("Not final"));
     await h.emit("agent_before_settle", { outcome: "completed" });
@@ -146,9 +146,9 @@ test("saved translation model is reused in a new session while the toggle follow
     assert.equal(saved.model, "small-2");
     assert.equal(saved.enabled, false);
     await h.toggle();
-    assert.match(h.status, /译 开/);
+    assert.match(h.status, /译 on/);
     await h.emit("session_start");
-    assert.match(h.status, /译 关/);
+    assert.match(h.status, /译 off/);
     await h.toggle();
     await h.start();
     assert.equal(h.calls[0].config.provider, "other");
