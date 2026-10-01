@@ -3,7 +3,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { matchesKey } from "@earendil-works/pi-tui";
 import { defaults, loadConfig, saveConfig, type Config } from "./config.ts";
 import { protect, translate } from "./translator.ts";
-import { pickTranslationModel } from "./model-picker.ts";
+import { showTranslationSettings } from "./settings-pane.ts";
 
 export const OUTPUT = "pi-translate.output";
 export const INPUT = "pi-translate.input";
@@ -25,7 +25,8 @@ export function registerTranslation(
 ): void {
   let config: Config = { ...defaults };
   let defaultEnabled = defaults.enabled;
-  let configurationOpen = false;
+  let configurationJob: AbortController | undefined;
+  let configWrites: Promise<void> = Promise.resolve();
   let configError: string | undefined;
   let prepared: { text: string; config: Config } | undefined;
   let run: Run | undefined;
@@ -74,7 +75,8 @@ export function registerTranslation(
     prepared = undefined;
     run = undefined;
     lastFailure = undefined;
-    configurationOpen = false;
+    configurationJob?.abort();
+    configurationJob = undefined;
   };
   const toggle = (ctx: ExtensionContext, enabled = !config.enabled) => {
     config = { ...config, enabled };
@@ -88,7 +90,7 @@ export function registerTranslation(
     catch { storageError = "（会话记录写入失败；请保留输入框中的原文）"; }
     // Reporting must not throw out of an input hook: pi would otherwise pass input through.
     try {
-      ctx.ui.notify(`${failure.direction === "input" ? "输入翻译失败，未提交；原文已保留，/translate recover 可恢复" : "回答翻译失败；原回答保持不变"}：${failure.error}${storageError}`, "error");
+      ctx.ui.notify(`${failure.direction === "input" ? "输入翻译失败，未提交；原文已保留，可在 /translate 中恢复输入" : "回答翻译失败；原回答保持不变"}：${failure.error}${storageError}`, "error");
     } catch { /* A shutting-down UI must not turn a handled input into an execution. */ }
   };
   const reload = async (ctx: ExtensionContext) => {
@@ -109,76 +111,78 @@ export function registerTranslation(
   };
 
   // Keep the saved startup policy separate from Alt+T's temporary runtime switch.
-  const persistSettings = async (ctx: ExtensionContext, changes: Partial<Config>, ownEpoch: number) => {
-    if (ownEpoch !== epoch) return false;
-    const next = { ...config, enabled: defaultEnabled, ...changes };
-    try {
-      await saveConfig(configPath, next);
+  const persistSettings = (ctx: ExtensionContext, changes: Partial<Config>, ownEpoch: number) => {
+    // Closing/reopening the panel while a write is in flight must not race or
+    // overwrite a newer model/default with a stale configuration snapshot.
+    const result = configWrites.then(async () => {
       if (ownEpoch !== epoch) return false;
-      defaultEnabled = next.enabled;
-      config = { ...next, enabled: config.enabled };
-      configError = undefined;
-      status(ctx);
-      return true;
-    } catch (error) {
-      if (ownEpoch === epoch) ctx.ui.notify(`保存翻译配置失败：${String(error)}`, "error");
-      return false;
-    }
+      const next = { ...config, enabled: defaultEnabled, ...changes };
+      try {
+        await saveConfig(configPath, next);
+        if (ownEpoch !== epoch) return false;
+        defaultEnabled = next.enabled;
+        config = { ...next, enabled: config.enabled };
+        configError = undefined;
+        status(ctx);
+        return true;
+      } catch (error) {
+        if (ownEpoch !== epoch) return false;
+        throw new Error(`保存翻译配置失败：${String(error)}`);
+      }
+    });
+    configWrites = result.then(() => undefined, () => undefined);
+    return result;
   };
   const selectModel = async (ctx: ExtensionContext, provider: string, model: string, ownEpoch: number) => {
-    if (ownEpoch !== epoch) return;
+    if (ownEpoch !== epoch) return false;
     if (!ctx.modelRegistry.find(provider, model)) {
-      ctx.ui.notify(`找不到翻译模型 ${provider}/${model}；用 /translate 设置菜单选择，或先配置 pi provider`, "error");
-      return;
+      throw new Error(`找不到翻译模型 ${provider}/${model}，请重新选择或检查 pi provider`);
     }
-    if (await persistSettings(ctx, { provider, model }, ownEpoch)) {
-      ctx.ui.notify(`已保存翻译模型：${provider}/${model}（跨会话生效，主模型不变）`, "info");
-    }
+    return persistSettings(ctx, { provider, model }, ownEpoch);
   };
-  const chooseModel = async (ctx: ExtensionContext, ownEpoch: number) => {
-    // Reload local model definitions without a network catalog refresh or a model switch.
-    await ctx.modelRegistry.refresh({ allowNetwork: false });
-    if (ownEpoch !== epoch) return;
-    const error = ctx.modelRegistry.getError();
-    if (error) { ctx.ui.notify(`pi 模型配置不可用：${error}`, "error"); return; }
-    const models = ctx.modelRegistry.getAvailable();
-    if (!models.length) {
-      ctx.ui.notify("没有可用的翻译模型；请先用 /login 配置 provider，或检查 pi 的 models.json", "warning");
-      return;
-    }
-    const selected = await pickTranslationModel(ctx, models, config);
-    if (selected && ownEpoch === epoch) await selectModel(ctx, selected.provider, selected.id, ownEpoch);
+  const recoverableInput = (ctx: ExtensionContext) => {
+    // Read only extension-owned entries, after the user explicitly opens our menu.
+    const ownEntries = ctx.sessionManager.getBranch().filter((entry) =>
+      entry.type === "custom" && (entry.customType === FAILURE || entry.customType === INPUT));
+    return (lastFailure?.direction === "input" ? lastFailure : undefined)
+      ?? ownEntries.filter((entry) => entry.type === "custom" && entry.customType === FAILURE)
+        .map((entry) => (entry as { data?: FailureData }).data).findLast((data) => data?.direction === "input")
+      ?? (ownEntries.findLast((entry) => entry.type === "custom" && entry.customType === INPUT) as { data?: FailureData } | undefined)?.data;
   };
-  const chooseDefault = async (ctx: ExtensionContext, ownEpoch: number) => {
-    const choice = await ctx.ui.select(`新对话默认 · ${defaultEnabled ? "on" : "off"}`, ["on", "off"]);
-    if (choice !== "on" && choice !== "off") return;
-    if (await persistSettings(ctx, { enabled: choice === "on" }, ownEpoch)) {
-      ctx.ui.notify(`新对话默认：${choice}（已保存；当前开关不变）`, "info");
-    }
+  const recoverInput = (ctx: ExtensionContext): string | undefined => {
+    const input = recoverableInput(ctx);
+    if (!input) return "没有可恢复的输入";
+    if (ctx.ui.getEditorText().trim()) return "请先清空输入框，不会覆盖当前草稿";
+    ctx.ui.setEditorText(input.original);
+    if (input.images?.length) ctx.ui.notify("文本已恢复；附件数据仍保留，请重新附加图片", "warning");
+    return undefined;
   };
-  const configure = async (ctx: ExtensionContext, action: (ownEpoch: number) => Promise<void>) => {
-    if (configurationOpen) { ctx.ui.notify("翻译设置已打开，请先完成或取消当前操作", "warning"); return; }
-    configurationOpen = true;
+  const showSettings = async (ctx: ExtensionContext) => {
+    if (configurationJob) return;
+    const job = new AbortController();
+    configurationJob = job;
     const ownEpoch = epoch;
-    try { await action(ownEpoch); }
-    catch (error) { if (ownEpoch === epoch) ctx.ui.notify(`翻译设置失败：${String(error)}`, "error"); }
-    finally { if (ownEpoch === epoch) configurationOpen = false; }
-  };
-  const showSettings = async (ctx: ExtensionContext, ownEpoch: number) => {
-    while (ownEpoch === epoch) {
-      const options = [
-        `翻译模型 · ${config.provider && config.model ? `${config.provider}/${config.model}` : "未选择"}`,
-        `当前开关 · ${config.enabled ? "on" : "off"}`,
-        `新对话默认 · ${defaultEnabled ? "on" : "off"}`,
-        "关闭设置",
-      ];
-      const choice = await ctx.ui.select("翻译设置", options);
-      if (ownEpoch !== epoch || !choice || choice === options[3]) return;
-      if (choice === options[0]) await chooseModel(ctx, ownEpoch);
-      else if (choice === options[1]) toggle(ctx);
-      else if (choice === options[2]) await chooseDefault(ctx, ownEpoch);
-      else return;
-    }
+    const canRecover = Boolean(recoverableInput(ctx));
+    try {
+      await showTranslationSettings(ctx, {
+        state: () => ({ enabled: config.enabled, defaultEnabled, provider: config.provider, model: config.model,
+          error: configError, canRecover }),
+        toggle: () => { if (ownEpoch === epoch) toggle(ctx); },
+        loadModels: async (signal) => {
+          await ctx.modelRegistry.refresh({ allowNetwork: false, signal });
+          signal.throwIfAborted();
+          if (ownEpoch !== epoch) throw new Error("会话已改变");
+          const error = ctx.modelRegistry.getError();
+          if (error) throw new Error(error);
+          return ctx.modelRegistry.getAvailable();
+        },
+        selectModel: (model) => selectModel(ctx, model.provider, model.id, ownEpoch),
+        setDefault: (enabled) => persistSettings(ctx, { enabled }, ownEpoch),
+        recover: () => ownEpoch === epoch ? recoverInput(ctx) : "会话已改变",
+      }, job.signal);
+    } catch (error) {
+      if (ownEpoch === epoch && !job.signal.aborted) ctx.ui.notify(`翻译设置失败：${String(error)}`, "error");
+    } finally { if (ownEpoch === epoch) configurationJob = undefined; }
   };
 
   pi.registerShortcut("alt+t", {
@@ -186,42 +190,14 @@ export function registerTranslation(
     handler: async (ctx) => { if (ctx.mode === "tui") toggle(ctx); },
   });
   pi.registerCommand("translate", {
-    description: "翻译设置与选模（Alt+T 快速切换）",
-    getArgumentCompletions: (prefix) => {
-      const commands = ["on", "off", "status", "toggle", "reload", "recover"];
-      const matches = commands.filter((name) => name.startsWith(prefix));
-      return matches.length ? matches.map((name) => ({ value: name, label: name })) : null;
-    },
+    description: "打开翻译设置（Alt+T 快速切换）",
     handler: async (args, ctx) => {
       if (ctx.mode !== "tui") {
         ctx.ui.notify("pi-translate 仅在 pi 原生 TUI 启用；其他模式保持原样", "warning");
         return;
       }
-      const action = args.trim();
-      if (!action) await configure(ctx, (ownEpoch) => showSettings(ctx, ownEpoch));
-      else if (action === "toggle") toggle(ctx);
-      else if (action === "on" || action === "off") toggle(ctx, action === "on");
-      else if (action === "reload") await configure(ctx, () => reload(ctx));
-      else if (action === "recover") {
-        // Only extension-owned recovery data is read, and only on explicit user request.
-        const ownEntries = ctx.sessionManager.getBranch().filter((entry) =>
-          entry.type === "custom" && (entry.customType === FAILURE || entry.customType === INPUT));
-        const failures = ownEntries.filter((entry) => entry.type === "custom" && entry.customType === FAILURE)
-          .map((entry) => (entry as { data?: FailureData }).data);
-        const failure = (lastFailure?.direction === "input" ? lastFailure : undefined)
-          ?? failures.findLast((data) => data?.direction === "input")
-          ?? (ownEntries.findLast((entry) => entry.type === "custom" && entry.customType === INPUT) as { data?: FailureData } | undefined)?.data;
-        if (!failure) ctx.ui.notify("没有可恢复的失败输入", "info");
-        else if (ctx.ui.getEditorText().trim()) ctx.ui.notify("请先清空输入框；不会覆盖当前草稿", "warning");
-        else {
-          ctx.ui.setEditorText(failure.original);
-          if (failure.images?.length) ctx.ui.notify("文本已恢复；附件原始数据保存在失败记录中，请重新附加图片", "warning");
-        }
-      } else if (action === "status") {
-        ctx.ui.notify(`翻译：${config.enabled ? "on" : "off"}\n翻译模型：${config.provider && config.model ? `${config.provider}/${config.model}` : "未选择（/translate 设置）"}\n新对话默认：${defaultEnabled ? "on" : "off"}\n配置：${configPath}${configError ? `\n配置错误：${configError}` : ""}\nAlt+T 快速切换 · /translate 打开设置`, "info");
-      } else {
-        ctx.ui.notify("用 /translate 打开设置菜单选择模型和新对话默认；快捷命令：on / off / status / toggle / reload / recover", "warning");
-      }
+      if (args.trim()) { ctx.ui.notify("仅支持 /translate，无需参数", "warning"); return; }
+      await showSettings(ctx);
     },
   });
 
@@ -233,7 +209,7 @@ export function registerTranslation(
     await reload(ctx);
     if (ownEpoch !== epoch) return;
     unsubscribeKeys = ctx.ui.onTerminalInput((data) => {
-      if (!matchesKey(data, "escape") || configurationOpen) return;
+      if (!matchesKey(data, "escape") || configurationJob) return;
       if (run) run.cancelled = true;
       inputJob?.abort(new Error("输入翻译已取消"));
       outputJob?.abort(new Error("回答翻译已取消"));

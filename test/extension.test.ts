@@ -93,8 +93,8 @@ test("input failure blocks execution, preserves draft/attachments and is explici
     const failure = h.entries.find((e) => e.customType === FAILURE)!;
     assert.equal(failure.data.original, "不能丢失"); assert.deepEqual(failure.data.images, images);
     assert.match(h.notifications[0], /未提交/);
-    await h.command("recover"); assert.equal(h.editor, "new draft");
-    h.editor = ""; await h.command("recover"); assert.equal(h.editor, "不能丢失");
+    await h.restoreInput(); assert.equal(h.editor, "new draft");
+    h.editor = ""; await h.restoreInput(); assert.equal(h.editor, "不能丢失");
   } finally { await h.close(); }
 });
 
@@ -199,7 +199,7 @@ test("pending input is backed up before session replacement and recoverable with
     gate.resolve({ text: "Original Chinese", changed: true });
     assert.deepEqual(await pending, { action: "handled" });
     assert.equal(h.entries.length, 1);
-    await h.command("recover");
+    await h.restoreInput();
     assert.equal(h.editor, "原始中文");
   } finally { await h.close(); }
 });

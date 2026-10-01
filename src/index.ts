@@ -29,7 +29,7 @@ export default function (pi: ExtensionAPI) {
     content.addChild(new Text(theme.fg("error", `${data.direction === "input" ? "输入翻译失败 · 未提交" : "回答翻译失败 · 原回答保留"}：${data.error}`), 1, 1));
     if (data.direction === "input") {
       content.addChild(new Text(data.original, 1, 0));
-      content.addChild(new Text(theme.fg("dim", "/translate recover 恢复文本后可手动重新提交；不会自动重试"), 1, 1));
+      content.addChild(new Text(theme.fg("dim", "/translate 中选择“恢复输入”后可手动重新提交；不会自动重试"), 1, 1));
     }
     return content;
   });

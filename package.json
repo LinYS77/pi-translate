@@ -11,7 +11,7 @@
   },
   "engines": { "node": ">=22.19.0" },
   "pi": { "extensions": ["./src/index.ts"] },
-  "files": ["src", "docs", "README.md", "LICENSE"],
+  "files": ["src", "docs", "README.md", "README.zh-CN.md", "LICENSE"],
   "scripts": {
     "check": "tsc --noEmit",
     "test": "tsx --test test/*.test.ts"

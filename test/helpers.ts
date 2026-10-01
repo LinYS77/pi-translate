@@ -2,10 +2,12 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AssistantMessage, Context, Model, Api } from "@earendil-works/pi-ai";
-import type { ExtensionAPI, ExtensionContext, InputEventResult } from "@earendil-works/pi-coding-agent";
-import { saveConfig, defaults, type Config } from "../src/config.ts";
+import { initTheme, type Theme, type ExtensionAPI, type ExtensionContext, type InputEventResult } from "@earendil-works/pi-coding-agent";
+import { getKeybindings } from "@earendil-works/pi-tui";
+import { saveConfig, loadConfig, defaults, type Config } from "../src/config.ts";
 import { registerTranslation } from "../src/extension.ts";
 import type { translate } from "../src/translator.ts";
+import type { TranslationSettingsPane } from "../src/settings-pane.ts";
 
 export const model: Model<Api> = {
   id: "small", name: "small", api: "openai-completions", provider: "translator", baseUrl: "https://invalid.example",
@@ -20,7 +22,13 @@ export function deferred<T>() {
   const promise = new Promise<T>((r) => { resolve = r; });
   return { promise, resolve };
 }
+export const flushUI = () => new Promise<void>((resolve) => setImmediate(resolve));
+export async function finishSave(pane: TranslationSettingsPane) {
+  for (let i = 0; pane.isSaving && i < 1000; i++) await flushUI();
+  if (pane.isSaving) throw new Error("settings save did not finish");
+}
 export async function harness(translateText?: typeof translate, overrides: Partial<Config> = {}) {
+  initTheme("dark", false);
   const dir = await mkdtemp(join(tmpdir(), "pi-translate-test-"));
   const configPath = join(dir, "config.json");
   await saveConfig(configPath, { ...defaults, enabled: true, provider: model.provider, model: model.id, ...overrides });
@@ -31,22 +39,27 @@ export async function harness(translateText?: typeof translate, overrides: Parti
   const notifications: string[] = [];
   const calls: { text: string; direction: string; config: Config }[] = [];
   const statusHistory: (string | undefined)[] = [];
-  const choices: (number | string | undefined)[] = [];
-  const modelChoices: (Model<Api> | undefined)[] = [];
-  const dialogs: { title: string; options: string[] }[] = [];
-  let modelPickerCalls = 0;
+  const uiSteps: ((pane: TranslationSettingsPane) => void | Promise<void>)[] = [];
+  const panes: TranslationSettingsPane[] = [];
+  const customOptions: any[] = [];
+  let renderRequests = 0;
   let editor = "";
   let status = "";
   let keyHandler: ((data: string) => unknown) | undefined;
   const ctx = {
     mode: "tui", hasUI: true, signal: undefined, model: { ...model, provider: "main", id: "large" },
     ui: {
-      select: async (title: string, options: string[]) => {
-        dialogs.push({ title, options });
-        const choice = choices.shift();
-        return typeof choice === "number" ? options[choice] : choice;
-      },
-      custom: async () => { modelPickerCalls++; return modelChoices.shift(); },
+      select: () => { throw new Error("Settings must stay in one overlay, not reopen a selector"); },
+      custom: (factory: any, options: any) => new Promise((resolve, reject) => {
+        customOptions.push(options);
+        void Promise.resolve(factory({ terminal: { rows: 40, columns: 80 }, requestRender: () => { renderRequests++; } },
+          { fg: (_color: unknown, text: string) => text } as Theme, getKeybindings(), resolve)).then(async (pane: TranslationSettingsPane) => {
+          panes.push(pane); pane.focused = true;
+          const step = uiSteps.shift();
+          if (step) await step(pane);
+          else pane.handleInput("\u001b");
+        }).catch(reject);
+      }),
       setStatus: (_key: string, value: string | undefined) => { status = value ?? ""; statusHistory.push(value); },
       notify: (value: string) => notifications.push(value),
       getEditorText: () => editor,
@@ -74,22 +87,42 @@ export async function harness(translateText?: typeof translate, overrides: Parti
     for (const handler of handlers.get(name) ?? []) result = await handler({ type: name, ...event }, ctx);
     return result;
   };
+  const command = (text = "") => commands.get("translate").handler(text, ctx);
   await emit("session_start");
   return {
-    ctx, pi, entries, calls, notifications, emit, dir, choices, modelChoices, dialogs, statusHistory,
-    get modelPickerCalls() { return modelPickerCalls; },
+    ctx, pi, entries, calls, notifications, emit, dir, panes, uiSteps, customOptions, statusHistory, commands,
+    get renderRequests() { return renderRequests; },
     get editor() { return editor; }, set editor(value: string) { editor = value; },
     get status() { return status; },
     key: (data: string) => keyHandler?.(data),
-    command: (text: string) => commands.get("translate").handler(text, ctx),
-    completions: (prefix: string) => commands.get("translate").getArgumentCompletions(prefix),
+    command,
     async chooseModel(selected?: Model<Api>) {
-      choices.push(0, 3); modelChoices.push(selected);
-      await commands.get("translate").handler("", ctx);
+      const available = ctx.modelRegistry.getAvailable;
+      if (selected) ctx.modelRegistry.getAvailable = () => [selected];
+      uiSteps.push(async (pane) => {
+        pane.handleInput("\r"); await flushUI();
+        pane.handleInput(selected ? "\r" : "\u001b");
+        await finishSave(pane);
+        pane.handleInput("\u001b");
+      });
+      try { await command(); }
+      finally { ctx.modelRegistry.getAvailable = available; }
     },
     async chooseDefault(enabled: boolean) {
-      choices.push(2, enabled ? "on" : "off", 3);
-      await commands.get("translate").handler("", ctx);
+      const saved = await loadConfig(configPath);
+      uiSteps.push(async (pane) => {
+        pane.handleInput("\u001b[B"); pane.handleInput("\u001b[B");
+        if (saved.enabled !== enabled) pane.handleInput("\r");
+        await finishSave(pane); pane.handleInput("\u001b");
+      });
+      await command();
+    },
+    async restoreInput() {
+      uiSteps.push((pane) => {
+        for (let i = 0; i < 3; i++) pane.handleInput("\u001b[B");
+        pane.handleInput("\r"); pane.handleInput("\u001b");
+      });
+      await command();
     },
     toggle: () => shortcuts.get("alt+t").handler(ctx),
     input: (text: string, extra = {}): Promise<InputEventResult> => emit("input", { text, source: "interactive", ...extra }),
@@ -97,15 +130,12 @@ export async function harness(translateText?: typeof translate, overrides: Parti
       const input = await emit("input", { text, source: "interactive" });
       if (input?.action === "handled") return input;
       await emit("before_agent_start", { prompt: input?.action === "transform" ? input.text : text });
-      await emit("agent_start");
-      await emit("turn_start");
+      await emit("agent_start"); await emit("turn_start");
       return input;
     },
     turn: (message = assistant("Final answer"), id = "answer-id", extra = {}) => emit("turn_end", { message, messageEntryId: id, toolResults: [], outcome: "completed", ...extra }),
     async settle(outcome = "completed") {
-      await emit("agent_end");
-      await emit("agent_before_settle", { outcome });
-      await emit("agent_settled");
+      await emit("agent_end"); await emit("agent_before_settle", { outcome }); await emit("agent_settled");
     },
     async close() { await emit("session_shutdown"); await rm(dir, { recursive: true, force: true }); },
   };
