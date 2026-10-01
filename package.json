@@ -1,20 +1,51 @@
 {
-  "name": "pi-translate",
+  "name": "@linys77/pi-translate",
   "version": "0.1.0",
-  "description": "Switchable Chinese/English boundary translation for pi, without rewriting conversation context",
+  "description": "Chinese/English translation for Pi, without rewriting conversation context",
   "type": "module",
-  "keywords": ["pi-package"],
+  "keywords": [
+    "pi-package",
+    "pi",
+    "translation",
+    "chinese"
+  ],
   "license": "MIT",
+  "author": "LinYS77",
   "repository": {
     "type": "git",
-    "url": "git+ssh://git@github.com/LinYS77/pi-translate.git"
+    "url": "git+https://github.com/LinYS77/pi-translate.git"
   },
-  "engines": { "node": ">=22.19.0" },
-  "pi": { "extensions": ["./src/index.ts"] },
-  "files": ["src", "docs", "README.md", "README.zh-CN.md", "LICENSE"],
+  "homepage": "https://github.com/LinYS77/pi-translate#readme",
+  "bugs": {
+    "url": "https://github.com/LinYS77/pi-translate/issues"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "files": [
+    "src",
+    "docs/behavior.md",
+    "README.md",
+    "README.zh-CN.md",
+    "LICENSE"
+  ],
   "scripts": {
+    "format": "prettier --write src test scripts .github package.json tsconfig.json",
+    "format:check": "prettier --check src test scripts .github package.json tsconfig.json",
     "check": "tsc --noEmit",
-    "test": "tsx --test test/*.test.ts"
+    "test": "tsx --test test/*.test.ts",
+    "test:package": "tsx scripts/check-package.ts",
+    "verify": "npm run format:check && npm run check && npm test && npm run test:package",
+    "prepublishOnly": "npm run verify"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
@@ -26,6 +57,7 @@
     "@earendil-works/pi-coding-agent": "0.99.2",
     "@earendil-works/pi-tui": "0.99.2",
     "@types/node": "^24.0.0",
+    "prettier": "3.9.9",
     "tsx": "^4.20.0",
     "typescript": "^5.9.0"
   }

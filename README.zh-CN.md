@@ -22,6 +22,14 @@ pi install git:github.com/LinYS77/pi-translate
 
 重启 Pi，或执行 `/reload`。
 
+npm 包以 **`@linys77/pi-translate`** 准备发布，目前尚未首发。发布后可使用：
+
+```bash
+pi install npm:@linys77/pi-translate
+```
+
+只保留一种安装来源。切换到 npm 前，先移除已有的 Git / 本地安装。
+
 ## 功能
 
 - **双向翻译** — 中文输入提交后转英文；任务真正结束后，最终回答转中文。
@@ -48,12 +56,14 @@ pi install git:github.com/LinYS77/pi-translate
 - 输出失败保留原回答。代码、路径等可识别字面内容受到保护，普通正文的准确性仍取决于翻译模型。
 - 仅支持 TUI。原生命令和其他扩展生成的输入保持原样。要求 Pi 0.99.2+、Node.js 22.19+。
 
-更多：[配置与行为](docs/behavior.md) · [手工验收](docs/acceptance.md)。
+更多：[配置与行为](docs/behavior.md) · [手工验收](https://github.com/LinYS77/pi-translate/blob/main/docs/acceptance.md)。
 
 ## 更新
 
 ```bash
 pi update git:github.com/LinYS77/pi-translate
+# 发布后，如使用 npm 安装：
+pi update npm:@linys77/pi-translate
 ```
 
 本地开发安装直接引用项目目录，修改后执行 `/reload`。
@@ -62,11 +72,10 @@ pi update git:github.com/LinYS77/pi-translate
 
 ```bash
 npm ci --ignore-scripts
-npm run check
-npm test
+npm run verify
 ```
 
-测试使用临时会话和模拟 provider，不调用付费模型、不读取你的凭据。开发说明：[docs/behavior.md](docs/behavior.md#development)。
+测试使用临时会话和模拟 provider，不调用付费模型、不读取你的凭据。参见[开发说明](docs/behavior.md#development)与[发布清单](https://github.com/LinYS77/pi-translate/blob/main/docs/releasing.md)。
 
 ## 许可
 

@@ -78,19 +78,19 @@ Literal detection is not a complete programming-language or Markdown parser. Use
 - Image data stays with the original input backup, but Pi has no public API for restoring image attachments to the editor. Reattach images after restoring text.
 - Native commands, skill/template invocations and `!` shell inputs keep their original semantics. RPC, JSON, print and other extensions' inputs bypass translation.
 - Pi's native assistant renderer provides Markdown and spacing. The extension follows saved `outputPad` / `markdown.codeBlockIndent`, with project-trust rules. It adds no heading or label.
-- Other extensions' Markdown transformers are not applied to custom entries. Copy-last-assistant still targets the original answer. Translation usage is retained in custom entries, not added through fake context messages to the main-model totals.
+- Other extensions' Markdown transformers are not applied to custom entries. Copy-last-assistant still targets the original answer. Output translation usage is retained in custom entries, not added through fake context messages to the main-model totals. Each translated input has one original-text backup; its English text already lives in the real user message.
 - Opening an old session only redraws existing translations. It never translates history.
 
 ## Development
 
 ```bash
 npm ci --ignore-scripts
-npm run check
-npm test
-npm pack --dry-run
+npm run verify
 ```
 
-Tests cover real Pi session events, context isolation, failures, native rendering, the one-overlay settings lifecycle, fixed panel dimensions, focus, cancellation, deferred model loading, save rollback and spinner disposal. Tests use fake providers and temporary directories; real model quality needs separate [manual checks](acceptance.md).
+`verify` runs formatting, strict TypeScript (including unused-code checks), behavioral tests and an actual tarball load in Pi. `format` applies the shared formatter. CI runs the same checks on Node 22.19.0 and 24. The package check uses `tar`, cleans up its temporary archive and excludes tests, scripts and maintainer docs from publication.
+
+Tests cover real Pi session events, context isolation, failures, native rendering, the one-overlay settings lifecycle, fixed panel dimensions, focus, cancellation, deferred model loading, save rollback and spinner disposal. Tests use fake providers and temporary directories; real model quality needs separate [manual checks](https://github.com/LinYS77/pi-translate/blob/main/docs/acceptance.md). Release steps: [releasing.md](https://github.com/LinYS77/pi-translate/blob/main/docs/releasing.md).
 
 Files:
 

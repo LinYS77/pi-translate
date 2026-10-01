@@ -22,6 +22,14 @@ pi install git:github.com/LinYS77/pi-translate
 
 Restart Pi or run `/reload`.
 
+The npm package is prepared as **`@linys77/pi-translate`**; its first release is pending. After publication:
+
+```bash
+pi install npm:@linys77/pi-translate
+```
+
+Use one installation source. Remove an existing Git/local install before switching to npm.
+
 ## Features
 
 - **Bidirectional** — Chinese input becomes English after submission; the final answer gets a Chinese translation when the task settles.
@@ -48,12 +56,14 @@ This is the extension's only command. There are no subcommands and no changes to
 - Output failures keep the original answer. Code, paths and other recognizable literals are protected; ordinary prose still depends on the translation model's accuracy.
 - TUI only. Native commands and extension-generated inputs pass through unchanged. Requires Pi 0.99.2+ and Node.js 22.19+.
 
-Details: [configuration and behavior](docs/behavior.md) · [manual checks](docs/acceptance.md).
+Details: [configuration and behavior](docs/behavior.md) · [manual checks](https://github.com/LinYS77/pi-translate/blob/main/docs/acceptance.md).
 
 ## Update
 
 ```bash
 pi update git:github.com/LinYS77/pi-translate
+# For an npm installation, after publication:
+pi update npm:@linys77/pi-translate
 ```
 
 Local development installs reference their directory directly; use `/reload` after editing.
@@ -62,11 +72,10 @@ Local development installs reference their directory directly; use `/reload` aft
 
 ```bash
 npm ci --ignore-scripts
-npm run check
-npm test
+npm run verify
 ```
 
-Tests use temporary sessions and fake providers. They do not call a paid model or read your credentials. Development notes: [docs/behavior.md](docs/behavior.md#development).
+Tests use temporary sessions and fake providers. They do not call a paid model or read your credentials. See [development](docs/behavior.md#development) and the [release checklist](https://github.com/LinYS77/pi-translate/blob/main/docs/releasing.md).
 
 ## License
 
