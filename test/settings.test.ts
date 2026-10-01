@@ -28,8 +28,7 @@ test("searchable model picker saves selection, not the temporary switch or main 
   try {
     const main = h.ctx.model;
     await h.toggle();
-    h.modelChoices.push(other);
-    await h.command("model");
+    await h.chooseModel(other);
     const saved = await loadConfig(join(h.dir, "config.json"));
     assert.equal(saved.provider, "other");
     assert.equal(saved.model, "fast");
@@ -46,10 +45,10 @@ test("searchable model picker saves selection, not the temporary switch or main 
 test("cancelled picker and unavailable providers keep the old configuration", async () => {
   const h = await harness();
   try {
-    await h.command("model");
+    await h.chooseModel();
     assert.equal((await loadConfig(join(h.dir, "config.json"))).provider, "translator");
     h.ctx.modelRegistry.getAvailable = () => [];
-    await h.command("model");
+    await h.chooseModel();
     assert.equal(h.modelPickerCalls, 1);
     assert.match(h.notifications.at(-1)!, /没有可用.*\/login/);
     assert.equal((await loadConfig(join(h.dir, "config.json"))).model, "small");
@@ -60,7 +59,7 @@ test("default on saves startup policy without changing the runtime or active tas
   const h = await harness(undefined, { enabled: false });
   try {
     await h.start();
-    await h.command("default on");
+    await h.chooseDefault(true);
     assert.match(h.status, /^译 off$/);
     assert.equal((await loadConfig(join(h.dir, "config.json"))).enabled, true);
     await h.turn(); await h.settle();
@@ -81,11 +80,11 @@ test("settings menu changes startup default through native selection", async () 
   } finally { await h.close(); }
 });
 
-test("explicit model command cannot accidentally persist an Alt+T switch", async () => {
+test("model settings cannot accidentally persist an Alt+T switch", async () => {
   const h = await harness();
   try {
     await h.toggle();
-    await h.command("model other fast");
+    await h.chooseModel(other);
     assert.match(h.status, /^译 off$/);
     assert.equal((await loadConfig(join(h.dir, "config.json"))).enabled, true);
     await h.emit("session_start");
@@ -99,7 +98,7 @@ test("Escape in settings only cancels settings, not the active task's final tran
   try {
     await h.start();
     h.ctx.ui.custom = (() => gate.promise) as typeof h.ctx.ui.custom;
-    const pending = h.command("model");
+    const pending = h.chooseModel();
     await new Promise((resolve) => setImmediate(resolve));
     h.key("\u001b");
     gate.resolve(undefined); await pending;
@@ -113,12 +112,26 @@ test("late picker selection after session replacement is discarded", async () =>
   const h = await harness();
   try {
     h.ctx.ui.custom = (() => gate.promise) as typeof h.ctx.ui.custom;
-    const pending = h.command("model");
+    const pending = h.chooseModel();
     await new Promise((resolve) => setImmediate(resolve));
     await h.emit("session_start");
     gate.resolve(other); await pending;
     assert.equal((await loadConfig(join(h.dir, "config.json"))).provider, "translator");
     assert.equal(h.notifications.length, 0);
+  } finally { await h.close(); }
+});
+
+test("removed model/default command routes only guide back to the settings menu", async () => {
+  const h = await harness();
+  try {
+    const before = await loadConfig(join(h.dir, "config.json"));
+    for (const command of ["model", "model other fast", "default on", "config"]) await h.command(command);
+    assert.equal(h.dialogs.length, 0);
+    assert.equal(h.modelPickerCalls, 0);
+    assert.deepEqual(await loadConfig(join(h.dir, "config.json")), before);
+    assert.ok(h.notifications.every((text) => text.includes("/translate 打开设置菜单")));
+    assert.equal(h.completions("model"), null);
+    assert.equal(h.completions("default"), null);
   } finally { await h.close(); }
 });
 

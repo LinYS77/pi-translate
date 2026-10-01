@@ -5,7 +5,7 @@
 - **默认关闭**；按 **Alt+T** 切换整个功能，状态栏显示 `译 on` / `译 off`。
 - `/translate` 打开原生设置菜单；可搜索并选择翻译模型，不必记住 provider 和 model ID。
 - 开启后：输入框提交的中文 → 英文 → 主模型；任务真正结束后，最终回答 → 中文。
-- 原回答保留；中文 Markdown 追加在正常对话区，标注“中文译文 · 仅供阅读”。
+- 原回答保留；中文译文直接追加在正常对话区，复用 pi 原生 assistant 排版，没有额外标题或标签。
 - 中文译文、输入原文和失败记录都是 **custom entry，不进入主模型上下文**。
 - 翻译模型独立配置，使用 pi 已配置的 provider / 登录凭据，不切换主模型。
 
@@ -39,7 +39,7 @@ pi install git:github.com/LinYS77/pi-translate
 /translate
 ```
 
-选择“翻译模型”，输入模型名称或 provider 搜索，按 Enter 保存。也可用 `/translate model` 直接进入选模；Esc 取消且不修改配置。只显示已配置凭据的 provider，**不会切换主模型**。
+选择“翻译模型”，输入模型名称或 provider 搜索，按 Enter 保存；Esc 取消且不修改配置。只显示已配置凭据的 provider，**不会切换主模型**。模型和默认开关统一通过此菜单设置，不提供单独的选模子命令。
 
 然后按 **Alt+T** 开启，在原输入框直接提交中文。正常输入和回答翻译没有逐次确认步骤。快捷键被终端或其他扩展占用时，可用 `/translate toggle` 切换；用 `/hotkeys` 检查冲突，或修改 `src/extension.ts` 中的注册键。
 
@@ -47,19 +47,13 @@ pi install git:github.com/LinYS77/pi-translate
 
 ## 如何配置翻译模型
 
-**模型只需配置一次，不需要每个新对话重新配置。** `/translate model` 会把 provider 和完整 model ID 写入 `~/.pi/agent/pi-translate.json`；新对话和重启 pi 都会自动读取，同一个 agent 目录下的不同项目也共用这份配置。若切换了 agent 目录或 `PI_TRANSLATE_CONFIG` 路径，则会读取另一份配置。
+**模型只需配置一次，不需要每个新对话重新配置。** 在 `/translate` 菜单中选模型后，provider 和完整 model ID 会写入 `~/.pi/agent/pi-translate.json`；新对话和重启 pi 都会自动读取，同一个 agent 目录下的不同项目也共用这份配置。若切换了 agent 目录或 `PI_TRANSLATE_CONFIG` 路径，则会读取另一份配置。
 
 ### 使用 pi 已支持的 provider
 
 1. 在 pi 内执行 `/login`，选择翻译模型对应的 provider，保存 API key 或完成登录。已配置可用凭据时不用重复登录。
-2. 执行 `/translate model`，输入名称、model ID 或 provider 搜索可用模型。当前翻译模型用 `✓` 标记；Enter 保存，Esc 取消。
+2. 执行 `/translate`，选择“翻译模型”，输入名称、model ID 或 provider 搜索可用模型。当前翻译模型用 `✓` 标记；Enter 保存，Esc 取消。
 3. 可用 `/translate status` 查看当前开关、翻译模型和新对话默认。按 **Alt+T** 开启，输入和输出共用该翻译模型，主模型不变。
-
-如果已知完整 ID，仍可直接设置。例如你能使用 OpenAI 的这个模型时：
-
-```text
-/translate model openai gpt-4.1-mini
-```
 
 交互式选模会重新读取 pi 的本地模型配置，不主动联网刷新模型目录，也不发送试译请求。可用列表表示有配置的凭据，不保证该凭据未过期或远程服务一定可用；首次实际翻译失败时会明确显示错误。
 
@@ -80,34 +74,23 @@ pi install git:github.com/LinYS77/pi-translate
 }
 ```
 
-把这段合并到已有配置，**不要覆盖其他 provider**。在启动 pi 的环境中设置 `TRANSLATE_API_KEY`，不要把真实 key 写进本仓库。修改后执行 `/translate model`，会自动读取模型配置，搜索并选择新的 provider；也可以在 pi 重新读取配置后用完整 ID 指定：
-
-```text
-/translate model translation-api your-model-id
-```
+把这段合并到已有配置，**不要覆盖其他 provider**。在启动 pi 的环境中设置 `TRANSLATE_API_KEY`，不要把真实 key 写进本仓库。修改后打开 `/translate` 菜单并选择“翻译模型”，会自动读取本地模型配置；搜索并选择新的 provider。
 
 ### 新对话的开关状态
 
 **模型选择和新对话默认状态持久保存，Alt+T 开关只改变当前运行时状态。** 修改翻译模型不会顺带保存临时开关。
 
-在 `/translate` 设置菜单中调整“新对话默认”，或执行：
+在 `/translate` 设置菜单中选择“新对话默认”，再选择 `on` 或 `off`。
 
-```text
-/translate default on
-```
-
-新对话、重启或重载会读取该默认值（配置文件中的 `enabled`）。保存默认值不改变当前开关或当前任务；现在要开关仍按 Alt+T。用 `/translate default off` 恢复默认关闭。无需手动编辑 JSON。
+新对话、重启或重载会读取该默认值（配置文件中的 `enabled`）。保存默认值不改变当前开关或当前任务；现在要开关仍按 Alt+T。无需手动编辑 JSON。
 
 ## 命令与配置
 
 | 操作 | 效果 |
 | --- | --- |
-| `/translate` 或 `/translate config` | 原生设置菜单：模型、当前开关、新对话默认 |
+| `/translate` | 简洁设置菜单：翻译模型、当前开关、新对话默认、关闭设置 |
 | Alt+T 或 `/translate toggle` | 总开关切换，无弹窗 |
 | `/translate on` / `/translate off` | 显式临时开关 |
-| `/translate model` | 搜索并选择可用的翻译模型，选择后保存 |
-| `/translate model <provider> <model-id>` | 按完整 ID 保存翻译模型；当前任务仍用原快照 |
-| `/translate default [on\|off]` | 无参数时交互选择；保存新对话默认，不改变当前开关 |
 | `/translate status` | 显示当前开关、翻译模型、默认开关和配置路径 |
 | `/translate reload` | 重新读取翻译配置，无需重启 pi |
 | `/translate recover` | 恢复最近失败的输入；无失败记录时取最近保存的输入原文。只填回空编辑框，不提交、不覆盖草稿 |
@@ -124,7 +107,7 @@ pi install git:github.com/LinYS77/pi-translate
 }
 ```
 
-- `enabled` 是新对话、启动/重载时的默认状态。快捷键不写磁盘，换模型不保存临时开关；使用 `/translate default` 修改默认值。
+- `enabled` 是新对话、启动/重载时的默认状态。快捷键不写磁盘，换模型不保存临时开关；通过设置菜单的“新对话默认”修改。
 - `timeoutMs`：每次翻译的总超时，100–600000 毫秒。
 - `maxTokens`：翻译输出上限，64–131072，调用时还受翻译模型本身上限限制。长答案可适当调大。
 - 不做静默截断：长度受限、空响应、工具调用、错误、取消、占位符破坏都视为失败，不使用部分译文。
@@ -139,7 +122,7 @@ pi install git:github.com/LinYS77/pi-translate
 1. 开启时提交 A，A 的输入会翻译；A 运行中关闭开关，A 的最终回答仍翻译。
 2. 关闭时提交 B，B 运行中打开开关，不会追溯翻译 B 的输入或回答。
 3. 自动重试、自动压缩后的续跑，以及同一活动中消费的 steering / follow-up 队列，都可能是一个 pi task 的组成部分。其最终回答遵循该 task 最初的输出快照。队列中每条新输入仍使用各自提交时的开关；**不将尚未 settled 的前一段回答单独翻译**。
-4. 状态栏在当前开关与活动任务输出快照不同时显示 `本任务 on` / `本任务 off`。
+4. 翻译时状态栏只追加一个动态 spinner，例如 `译 on ⠹`，不显示方向或进度文字。完成、失败、取消、切换会话和关闭时停止动画。当前开关与活动任务输出快照不同时仍显示 `本任务 on` / `本任务 off`。
 5. 输入正在翻译时再次提交，不会越过它或重复执行；第二份输入会显示为未提交的失败记录，可稍后恢复。Esc 取消本扩展的翻译，同时保留 pi 自身的中断行为。
 
 输出只接受：本活动中最后一个完整、无工具调用、有正文、`stopReason: stop` 的 assistant turn，并且活动正常到达 `agent_settled`。可见思考、工具参数/结果、进度说明都不会作为翻译模型的输入。错误、中断、空回答、截断回答不会回退使用上一轮或中间文字。
@@ -163,7 +146,7 @@ pi install git:github.com/LinYS77/pi-translate
 - 输入已有的英文文本、引号内目标文字（如“保存”）、常见代码块、反引号代码、路径、URL、标识符、数字、公式等通过占位符保护，恢复时检查是否遗漏、重复或损坏。
 - 输出中已有的汉字保留，代码和其他可识别字面内容同样保护。双向均保守地保护引号内文字，以免字面字符串被翻译；因此单独的引号内普通引用也可能保留原语言。
 - 普通正文由模型遵守完整性规则：保留否定、约束、警告、顺序和不确定性，不总结、不解题、不补充。
-- 使用 pi 原生 `Markdown` 和主题渲染，支持标题、列表、表格、代码块；没有独立窗口或长答案通知区。
+- 复用 pi 的 `AssistantMessageComponent` 和原生 Markdown 主题；读取 pi 已保存的 `outputPad` 和 `markdown.codeBlockIndent`，尊重项目配置的 trust 状态。custom entry 已由宿主加消息间距，renderer 不重复增加留白。支持标题、列表、表格、代码块，没有额外译文标签、独立窗口或长答案通知区。
 
 **模型翻译不是可证明的语义等价转换。** 自动测试能验证边界、字面保护和故障行为，不能保证任意模型不会误译普通正文。字面识别也不是完整的程序或 Markdown 解析器；对必须逐字保留的代码、命令、字符串，建议用反引号或代码块明确标记。双向引号均保守地按字面目标保留，不把其中内容当成待润色的句子。
 
@@ -209,6 +192,7 @@ npm pack --dry-run
 - `src/translator.ts`：单文本调用、字面保护、完整性检查、超时与取消。
 - `src/config.ts`：独立配置的校验和原子写入。
 - `src/model-picker.ts`：原生可搜索选模 UI，只返回翻译模型选择，不修改主模型。
-- `test/`：模块、UI 与真实 pi 生命周期集成测试。
+- `src/output-view.ts`：复用原生 assistant 组件，去掉宿主已经提供的重复间距；只参与显示。
+- `test/`：模块、菜单、动画清理、原生排版对比与真实 pi 生命周期集成测试。
 
 MIT License.

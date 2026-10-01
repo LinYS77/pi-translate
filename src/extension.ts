@@ -34,10 +34,31 @@ export function registerTranslation(
   let outputJob: AbortController | undefined;
   let unsubscribeKeys: (() => void) | undefined;
   let lastFailure: FailureData | undefined;
+  const spinnerFrames = ["⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏", "⠋", "⠙"];
+  let spinnerFrame = 0;
+  let spinnerTimer: ReturnType<typeof setInterval> | undefined;
+  let statusContext: ExtensionContext | undefined;
+  const stopSpinner = () => {
+    if (spinnerTimer) clearInterval(spinnerTimer);
+    spinnerTimer = undefined;
+    statusContext = undefined;
+  };
 
   const status = (ctx: ExtensionContext) => {
-    if (ctx.mode !== "tui") return;
-    const busy = inputJob ? " · 输入→EN…" : outputJob ? " · 回答→中文…" : "";
+    if (ctx.mode !== "tui") { stopSpinner(); return; }
+    statusContext = ctx;
+    const translating = Boolean(inputJob || outputJob);
+    if (translating && !spinnerTimer) {
+      spinnerFrame = 0;
+      const ownEpoch = epoch;
+      spinnerTimer = setInterval(() => {
+        if (ownEpoch !== epoch || !statusContext) return;
+        spinnerFrame = (spinnerFrame + 1) % spinnerFrames.length;
+        status(statusContext);
+      }, 80);
+      spinnerTimer.unref?.();
+    } else if (!translating) stopSpinner();
+    const busy = translating ? ` ${spinnerFrames[spinnerFrame]}` : "";
     const locked = run && run.config.enabled !== config.enabled ? ` · 本任务 ${run.config.enabled ? "on" : "off"}` : "";
     const missing = !config.provider || !config.model ? " · 未选模型" : "";
     try {
@@ -46,6 +67,7 @@ export function registerTranslation(
   };
   const reset = () => {
     epoch++;
+    stopSpinner();
     inputJob?.abort(new Error("会话已改变"));
     outputJob?.abort(new Error("会话已改变"));
     inputJob = outputJob = undefined;
@@ -106,7 +128,7 @@ export function registerTranslation(
   const selectModel = async (ctx: ExtensionContext, provider: string, model: string, ownEpoch: number) => {
     if (ownEpoch !== epoch) return;
     if (!ctx.modelRegistry.find(provider, model)) {
-      ctx.ui.notify(`找不到翻译模型 ${provider}/${model}；用 /translate model 选择，或先配置 pi provider`, "error");
+      ctx.ui.notify(`找不到翻译模型 ${provider}/${model}；用 /translate 设置菜单选择，或先配置 pi provider`, "error");
       return;
     }
     if (await persistSettings(ctx, { provider, model }, ownEpoch)) {
@@ -127,8 +149,8 @@ export function registerTranslation(
     const selected = await pickTranslationModel(ctx, models, config);
     if (selected && ownEpoch === epoch) await selectModel(ctx, selected.provider, selected.id, ownEpoch);
   };
-  const chooseDefault = async (ctx: ExtensionContext, ownEpoch: number, value?: string) => {
-    const choice = value ?? await ctx.ui.select(`新对话默认开关 · 当前 ${defaultEnabled ? "on" : "off"}\n保存后不改变当前开关或任务`, ["on", "off"]);
+  const chooseDefault = async (ctx: ExtensionContext, ownEpoch: number) => {
+    const choice = await ctx.ui.select(`新对话默认 · ${defaultEnabled ? "on" : "off"}`, ["on", "off"]);
     if (choice !== "on" && choice !== "off") return;
     if (await persistSettings(ctx, { enabled: choice === "on" }, ownEpoch)) {
       ctx.ui.notify(`新对话默认：${choice}（已保存；当前开关不变）`, "info");
@@ -146,11 +168,11 @@ export function registerTranslation(
     while (ownEpoch === epoch) {
       const options = [
         `翻译模型 · ${config.provider && config.model ? `${config.provider}/${config.model}` : "未选择"}`,
-        `当前开关 · ${config.enabled ? "on" : "off"}（Alt+T）`,
+        `当前开关 · ${config.enabled ? "on" : "off"}`,
         `新对话默认 · ${defaultEnabled ? "on" : "off"}`,
         "关闭设置",
       ];
-      const choice = await ctx.ui.select("翻译设置 · 主模型不变\n模型和新对话默认会保存；当前开关只临时生效", options);
+      const choice = await ctx.ui.select("翻译设置", options);
       if (ownEpoch !== epoch || !choice || choice === options[3]) return;
       if (choice === options[0]) await chooseModel(ctx, ownEpoch);
       else if (choice === options[1]) toggle(ctx);
@@ -166,7 +188,7 @@ export function registerTranslation(
   pi.registerCommand("translate", {
     description: "翻译设置与选模（Alt+T 快速切换）",
     getArgumentCompletions: (prefix) => {
-      const commands = ["model", "default", "on", "off", "status", "toggle", "reload", "recover", "config"];
+      const commands = ["on", "off", "status", "toggle", "reload", "recover"];
       const matches = commands.filter((name) => name.startsWith(prefix));
       return matches.length ? matches.map((name) => ({ value: name, label: name })) : null;
     },
@@ -175,17 +197,12 @@ export function registerTranslation(
         ctx.ui.notify("pi-translate 仅在 pi 原生 TUI 启用；其他模式保持原样", "warning");
         return;
       }
-      const [action, provider, model, ...extra] = args.trim().split(/\s+/);
-      if (!action || action === "config") await configure(ctx, (ownEpoch) => showSettings(ctx, ownEpoch));
+      const action = args.trim();
+      if (!action) await configure(ctx, (ownEpoch) => showSettings(ctx, ownEpoch));
       else if (action === "toggle") toggle(ctx);
       else if (action === "on" || action === "off") toggle(ctx, action === "on");
       else if (action === "reload") await configure(ctx, () => reload(ctx));
-      else if (action === "model" && !provider) await configure(ctx, (ownEpoch) => chooseModel(ctx, ownEpoch));
-      else if (action === "model" && provider && model && !extra.length) {
-        await configure(ctx, (ownEpoch) => selectModel(ctx, provider, model, ownEpoch));
-      } else if (action === "default" && !model && (!provider || provider === "on" || provider === "off")) {
-        await configure(ctx, (ownEpoch) => chooseDefault(ctx, ownEpoch, provider));
-      } else if (action === "recover") {
+      else if (action === "recover") {
         // Only extension-owned recovery data is read, and only on explicit user request.
         const ownEntries = ctx.sessionManager.getBranch().filter((entry) =>
           entry.type === "custom" && (entry.customType === FAILURE || entry.customType === INPUT));
@@ -201,9 +218,9 @@ export function registerTranslation(
           if (failure.images?.length) ctx.ui.notify("文本已恢复；附件原始数据保存在失败记录中，请重新附加图片", "warning");
         }
       } else if (action === "status") {
-        ctx.ui.notify(`翻译：${config.enabled ? "on" : "off"}\n翻译模型：${config.provider && config.model ? `${config.provider}/${config.model}` : "未选择（/translate model）"}\n新对话默认：${defaultEnabled ? "on" : "off"}\n配置：${configPath}${configError ? `\n配置错误：${configError}` : ""}\nAlt+T 快速切换 · /translate 打开设置`, "info");
+        ctx.ui.notify(`翻译：${config.enabled ? "on" : "off"}\n翻译模型：${config.provider && config.model ? `${config.provider}/${config.model}` : "未选择（/translate 设置）"}\n新对话默认：${defaultEnabled ? "on" : "off"}\n配置：${configPath}${configError ? `\n配置错误：${configError}` : ""}\nAlt+T 快速切换 · /translate 打开设置`, "info");
       } else {
-        ctx.ui.notify("用 /translate 打开设置；命令：model [provider id] / default [on|off] / on / off / status / toggle / reload / recover", "warning");
+        ctx.ui.notify("用 /translate 打开设置菜单选择模型和新对话默认；快捷命令：on / off / status / toggle / reload / recover", "warning");
       }
     },
   });

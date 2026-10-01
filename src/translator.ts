@@ -96,7 +96,7 @@ export async function translate(
   parentSignal?.throwIfAborted();
   const protectedText = protect(text, direction);
   if (!protectedText.needsTranslation) return { text, changed: false };
-  if (!config.provider || !config.model) throw new Error("未配置翻译模型：/translate model <provider> <model-id>");
+  if (!config.provider || !config.model) throw new Error("未配置翻译模型：用 /translate 打开设置菜单选择模型");
   const model = registry.find(config.provider, config.model);
   if (!model) throw new Error(`找不到翻译模型 ${config.provider}/${config.model}`);
 

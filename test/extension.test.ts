@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { loadConfig } from "../src/config.ts";
-import { assistant, deferred, harness } from "./helpers.ts";
+import { assistant, deferred, harness, model } from "./helpers.ts";
 import { FAILURE, OUTPUT } from "../src/extension.ts";
 import type { Translation } from "../src/translator.ts";
 
@@ -140,7 +140,7 @@ test("session replacement discards late translation and cannot mix answers", asy
 test("saved translation model is reused in a new session while the toggle follows its saved default", async () => {
   const h = await harness(undefined, { enabled: false });
   try {
-    await h.command("model other small-2");
+    await h.chooseModel({ ...model, provider: "other", id: "small-2" });
     const saved = await loadConfig(join(h.dir, "config.json"));
     assert.equal(saved.provider, "other");
     assert.equal(saved.model, "small-2");
@@ -159,7 +159,7 @@ test("saved translation model is reused in a new session while the toggle follow
 test("model changes don't change the model snapshot of an active task", async () => {
   const h = await harness();
   try {
-    await h.start(); await h.command("model other small-2"); await h.turn(); await h.settle();
+    await h.start(); await h.chooseModel({ ...model, provider: "other", id: "small-2" }); await h.turn(); await h.settle();
     assert.equal(h.calls.at(-1)?.config.provider, "translator");
     await h.start(); assert.equal(h.calls.at(-1)?.config.provider, "other");
   } finally { await h.close(); }

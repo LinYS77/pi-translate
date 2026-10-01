@@ -30,6 +30,7 @@ export async function harness(translateText?: typeof translate, overrides: Parti
   const entries: { type: string; customType: string; data: any }[] = [];
   const notifications: string[] = [];
   const calls: { text: string; direction: string; config: Config }[] = [];
+  const statusHistory: (string | undefined)[] = [];
   const choices: (number | string | undefined)[] = [];
   const modelChoices: (Model<Api> | undefined)[] = [];
   const dialogs: { title: string; options: string[] }[] = [];
@@ -46,7 +47,7 @@ export async function harness(translateText?: typeof translate, overrides: Parti
         return typeof choice === "number" ? options[choice] : choice;
       },
       custom: async () => { modelPickerCalls++; return modelChoices.shift(); },
-      setStatus: (_key: string, value: string) => { status = value; },
+      setStatus: (_key: string, value: string | undefined) => { status = value ?? ""; statusHistory.push(value); },
       notify: (value: string) => notifications.push(value),
       getEditorText: () => editor,
       setEditorText: (value: string) => { editor = value; },
@@ -75,12 +76,21 @@ export async function harness(translateText?: typeof translate, overrides: Parti
   };
   await emit("session_start");
   return {
-    ctx, pi, entries, calls, notifications, emit, dir, choices, modelChoices, dialogs,
+    ctx, pi, entries, calls, notifications, emit, dir, choices, modelChoices, dialogs, statusHistory,
     get modelPickerCalls() { return modelPickerCalls; },
     get editor() { return editor; }, set editor(value: string) { editor = value; },
     get status() { return status; },
     key: (data: string) => keyHandler?.(data),
     command: (text: string) => commands.get("translate").handler(text, ctx),
+    completions: (prefix: string) => commands.get("translate").getArgumentCompletions(prefix),
+    async chooseModel(selected?: Model<Api>) {
+      choices.push(0, 3); modelChoices.push(selected);
+      await commands.get("translate").handler("", ctx);
+    },
+    async chooseDefault(enabled: boolean) {
+      choices.push(2, enabled ? "on" : "off", 3);
+      await commands.get("translate").handler("", ctx);
+    },
     toggle: () => shortcuts.get("alt+t").handler(ctx),
     input: (text: string, extra = {}): Promise<InputEventResult> => emit("input", { text, source: "interactive", ...extra }),
     async start(text = "请检查") {
