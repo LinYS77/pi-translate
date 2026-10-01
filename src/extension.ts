@@ -1,5 +1,8 @@
 import type { ImageContent } from "@earendil-works/pi-ai";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type {
+  ExtensionAPI,
+  ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
 import { matchesKey } from "@earendil-works/pi-tui";
 import { defaults, loadConfig, saveConfig, type Config } from "./config.ts";
 import { protect, translate } from "./translator.ts";
@@ -8,8 +11,22 @@ import { showTranslationSettings } from "./settings-pane.ts";
 export const OUTPUT = "pi-translate.output";
 export const INPUT = "pi-translate.input";
 export const FAILURE = "pi-translate.failure";
-export interface OutputData { original: string; translated: string; messageEntryId: string; provider?: string; model?: string }
-export interface FailureData { direction: "input" | "output"; original: string; error: string; images?: ImageContent[]; messageEntryId?: string }
+export interface OutputData {
+  original: string;
+  translated: string;
+  messageEntryId: string;
+  provider?: string;
+  model?: string;
+}
+interface InputData {
+  original: string;
+  images?: ImageContent[];
+}
+export interface FailureData extends InputData {
+  direction: "input" | "output";
+  error: string;
+  messageEntryId?: string;
+}
 interface Run {
   config: Config;
   candidate?: { text: string; id: string };
@@ -34,7 +51,7 @@ export function registerTranslation(
   let inputJob: AbortController | undefined;
   let outputJob: AbortController | undefined;
   let unsubscribeKeys: (() => void) | undefined;
-  let lastFailure: FailureData | undefined;
+  let lastInput: InputData | undefined;
   const spinnerFrames = ["⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏", "⠋", "⠙"];
   let spinnerFrame = 0;
   let spinnerTimer: ReturnType<typeof setInterval> | undefined;
@@ -46,7 +63,10 @@ export function registerTranslation(
   };
 
   const status = (ctx: ExtensionContext) => {
-    if (ctx.mode !== "tui") { stopSpinner(); return; }
+    if (ctx.mode !== "tui") {
+      stopSpinner();
+      return;
+    }
     statusContext = ctx;
     const translating = Boolean(inputJob || outputJob);
     if (translating && !spinnerTimer) {
@@ -60,11 +80,19 @@ export function registerTranslation(
       spinnerTimer.unref?.();
     } else if (!translating) stopSpinner();
     const busy = translating ? ` ${spinnerFrames[spinnerFrame]}` : "";
-    const locked = run && run.config.enabled !== config.enabled ? ` · 本任务 ${run.config.enabled ? "on" : "off"}` : "";
+    const locked =
+      run && run.config.enabled !== config.enabled
+        ? ` · 本任务 ${run.config.enabled ? "on" : "off"}`
+        : "";
     const missing = !config.provider || !config.model ? " · 未选模型" : "";
     try {
-      ctx.ui.setStatus("pi-translate", `译 ${config.enabled ? "on" : "off"}${busy}${locked}${configError ? " · 配置错误" : missing}`);
-    } catch { /* UI teardown must never make the input hook fail open. */ }
+      ctx.ui.setStatus(
+        "pi-translate",
+        `译 ${config.enabled ? "on" : "off"}${busy}${locked}${configError ? " · 配置错误" : missing}`,
+      );
+    } catch {
+      /* UI teardown must never make the input hook fail open. */
+    }
   };
   const reset = () => {
     epoch++;
@@ -74,24 +102,32 @@ export function registerTranslation(
     inputJob = outputJob = undefined;
     prepared = undefined;
     run = undefined;
-    lastFailure = undefined;
+    lastInput = undefined;
     configurationJob?.abort();
     configurationJob = undefined;
   };
-  const toggle = (ctx: ExtensionContext, enabled = !config.enabled) => {
-    config = { ...config, enabled };
+  const toggle = (ctx: ExtensionContext) => {
+    config = { ...config, enabled: !config.enabled };
     status(ctx);
   };
   const fail = (ctx: ExtensionContext, failure: FailureData) => {
-    lastFailure = failure;
+    if (failure.direction === "input") lastInput = failure;
     // Custom entries NEVER participate in model context, unlike sendMessage(display: true).
     let storageError = "";
-    try { pi.appendEntry(FAILURE, failure); }
-    catch { storageError = "（会话记录写入失败；请保留输入框中的原文）"; }
+    try {
+      pi.appendEntry(FAILURE, failure);
+    } catch {
+      storageError = "（会话记录写入失败；请保留输入框中的原文）";
+    }
     // Reporting must not throw out of an input hook: pi would otherwise pass input through.
     try {
-      ctx.ui.notify(`${failure.direction === "input" ? "输入翻译失败，未提交；原文已保留，可在 /translate 中恢复输入" : "回答翻译失败；原回答保持不变"}：${failure.error}${storageError}`, "error");
-    } catch { /* A shutting-down UI must not turn a handled input into an execution. */ }
+      ctx.ui.notify(
+        `${failure.direction === "input" ? "输入翻译失败，未提交；原文已保留，可在 /translate 中恢复输入" : "回答翻译失败；原回答保持不变"}：${failure.error}${storageError}`,
+        "error",
+      );
+    } catch {
+      /* A shutting-down UI must not turn a handled input into an execution. */
+    }
   };
   const reload = async (ctx: ExtensionContext) => {
     const ownEpoch = epoch;
@@ -111,7 +147,11 @@ export function registerTranslation(
   };
 
   // Keep the saved startup policy separate from Alt+T's temporary runtime switch.
-  const persistSettings = (ctx: ExtensionContext, changes: Partial<Config>, ownEpoch: number) => {
+  const persistSettings = (
+    ctx: ExtensionContext,
+    changes: Partial<Config>,
+    ownEpoch: number,
+  ) => {
     // Closing/reopening the panel while a write is in flight must not race or
     // overwrite a newer model/default with a stale configuration snapshot.
     const result = configWrites.then(async () => {
@@ -130,31 +170,34 @@ export function registerTranslation(
         throw new Error(`保存翻译配置失败：${String(error)}`);
       }
     });
-    configWrites = result.then(() => undefined, () => undefined);
+    configWrites = result.then(
+      () => undefined,
+      () => undefined,
+    );
     return result;
   };
-  const selectModel = async (ctx: ExtensionContext, provider: string, model: string, ownEpoch: number) => {
-    if (ownEpoch !== epoch) return false;
-    if (!ctx.modelRegistry.find(provider, model)) {
-      throw new Error(`找不到翻译模型 ${provider}/${model}，请重新选择或检查 pi provider`);
-    }
-    return persistSettings(ctx, { provider, model }, ownEpoch);
-  };
-  const recoverableInput = (ctx: ExtensionContext) => {
-    // Read only extension-owned entries, after the user explicitly opens our menu.
-    const ownEntries = ctx.sessionManager.getBranch().filter((entry) =>
-      entry.type === "custom" && (entry.customType === FAILURE || entry.customType === INPUT));
-    return (lastFailure?.direction === "input" ? lastFailure : undefined)
-      ?? ownEntries.filter((entry) => entry.type === "custom" && entry.customType === FAILURE)
-        .map((entry) => (entry as { data?: FailureData }).data).findLast((data) => data?.direction === "input")
-      ?? (ownEntries.findLast((entry) => entry.type === "custom" && entry.customType === INPUT) as { data?: FailureData } | undefined)?.data;
+  const recoverableInput = (ctx: ExtensionContext): InputData | undefined => {
+    if (lastInput) return lastInput;
+    // Inspect only extension-owned data, on explicit recovery; newest input wins.
+    const entry = ctx.sessionManager
+      .getBranch()
+      .findLast(
+        (entry) =>
+          entry.type === "custom" &&
+          (entry.customType === INPUT ||
+            (entry.customType === FAILURE &&
+              (entry.data as FailureData)?.direction === "input")),
+      );
+    return entry?.type === "custom" ? (entry.data as InputData) : undefined;
   };
   const recoverInput = (ctx: ExtensionContext): string | undefined => {
     const input = recoverableInput(ctx);
     if (!input) return "没有可恢复的输入";
-    if (ctx.ui.getEditorText().trim()) return "请先清空输入框，不会覆盖当前草稿";
+    if (ctx.ui.getEditorText().trim())
+      return "请先清空输入框，不会覆盖当前草稿";
     ctx.ui.setEditorText(input.original);
-    if (input.images?.length) ctx.ui.notify("文本已恢复；附件数据仍保留，请重新附加图片", "warning");
+    if (input.images?.length)
+      ctx.ui.notify("文本已恢复；附件数据仍保留，请重新附加图片", "warning");
     return undefined;
   };
   const showSettings = async (ctx: ExtensionContext) => {
@@ -164,39 +207,70 @@ export function registerTranslation(
     const ownEpoch = epoch;
     const canRecover = Boolean(recoverableInput(ctx));
     try {
-      await showTranslationSettings(ctx, {
-        state: () => ({ enabled: config.enabled, defaultEnabled, provider: config.provider, model: config.model,
-          error: configError, canRecover }),
-        toggle: () => { if (ownEpoch === epoch) toggle(ctx); },
-        loadModels: async (signal) => {
-          await ctx.modelRegistry.refresh({ allowNetwork: false, signal });
-          signal.throwIfAborted();
-          if (ownEpoch !== epoch) throw new Error("会话已改变");
-          const error = ctx.modelRegistry.getError();
-          if (error) throw new Error(error);
-          return ctx.modelRegistry.getAvailable();
+      await showTranslationSettings(
+        ctx,
+        {
+          state: () => ({
+            enabled: config.enabled,
+            defaultEnabled,
+            provider: config.provider,
+            model: config.model,
+            error: configError,
+            canRecover,
+          }),
+          toggle: () => {
+            if (ownEpoch === epoch) toggle(ctx);
+          },
+          loadModels: async (signal) => {
+            await ctx.modelRegistry.refresh({ allowNetwork: false, signal });
+            signal.throwIfAborted();
+            if (ownEpoch !== epoch) throw new Error("会话已改变");
+            const error = ctx.modelRegistry.getError();
+            if (error) throw new Error(error);
+            return ctx.modelRegistry.getAvailable();
+          },
+          selectModel: async ({ provider, id }) => {
+            if (ownEpoch !== epoch) return false;
+            if (!ctx.modelRegistry.find(provider, id))
+              throw new Error(
+                `找不到翻译模型 ${provider}/${id}，请重新选择或检查 pi provider`,
+              );
+            return persistSettings(ctx, { provider, model: id }, ownEpoch);
+          },
+          setDefault: (enabled) => persistSettings(ctx, { enabled }, ownEpoch),
+          recover: () =>
+            ownEpoch === epoch ? recoverInput(ctx) : "会话已改变",
         },
-        selectModel: (model) => selectModel(ctx, model.provider, model.id, ownEpoch),
-        setDefault: (enabled) => persistSettings(ctx, { enabled }, ownEpoch),
-        recover: () => ownEpoch === epoch ? recoverInput(ctx) : "会话已改变",
-      }, job.signal);
+        job.signal,
+      );
     } catch (error) {
-      if (ownEpoch === epoch && !job.signal.aborted) ctx.ui.notify(`翻译设置失败：${String(error)}`, "error");
-    } finally { if (ownEpoch === epoch) configurationJob = undefined; }
+      if (ownEpoch === epoch && !job.signal.aborted)
+        ctx.ui.notify(`翻译设置失败：${String(error)}`, "error");
+    } finally {
+      if (ownEpoch === epoch) configurationJob = undefined;
+    }
   };
 
   pi.registerShortcut("alt+t", {
     description: "切换自动双向翻译（当前任务的输出策略不变）",
-    handler: async (ctx) => { if (ctx.mode === "tui") toggle(ctx); },
+    handler: async (ctx) => {
+      if (ctx.mode === "tui") toggle(ctx);
+    },
   });
   pi.registerCommand("translate", {
     description: "打开翻译设置（Alt+T 快速切换）",
     handler: async (args, ctx) => {
       if (ctx.mode !== "tui") {
-        ctx.ui.notify("pi-translate 仅在 pi 原生 TUI 启用；其他模式保持原样", "warning");
+        ctx.ui.notify(
+          "pi-translate 仅在 pi 原生 TUI 启用；其他模式保持原样",
+          "warning",
+        );
         return;
       }
-      if (args.trim()) { ctx.ui.notify("仅支持 /translate，无需参数", "warning"); return; }
+      if (args.trim()) {
+        ctx.ui.notify("仅支持 /translate，无需参数", "warning");
+        return;
+      }
       await showSettings(ctx);
     },
   });
@@ -217,14 +291,20 @@ export function registerTranslation(
       return undefined;
     });
   });
-  pi.on("session_tree", (_event, ctx) => { reset(); status(ctx); });
+  pi.on("session_tree", (_event, ctx) => {
+    reset();
+    status(ctx);
+  });
   pi.on("session_shutdown", (_event, ctx) => {
     reset();
     unsubscribeKeys?.();
     unsubscribeKeys = undefined;
     if (ctx.mode === "tui") {
-      try { ctx.ui.setStatus("pi-translate", undefined); }
-      catch { /* The terminal may already have been disposed. */ }
+      try {
+        ctx.ui.setStatus("pi-translate", undefined);
+      } catch {
+        /* The terminal may already have been disposed. */
+      }
     }
   });
 
@@ -237,13 +317,23 @@ export function registerTranslation(
     const ownEpoch = epoch;
     // Don't allow a second Enter to overtake an asynchronous input translation.
     if (inputJob) {
-      fail(ctx, { direction: "input", original: event.text, images: event.images, error: "上一份输入仍在翻译，请稍后重新提交" });
+      fail(ctx, {
+        direction: "input",
+        original: event.text,
+        images: event.images,
+        error: "上一份输入仍在翻译，请稍后重新提交",
+      });
       return { action: "handled" };
     }
     // Native commands, templates and skills keep their original semantics. No expansion is read.
-    const nativeEntry = /^\/(?:skill:)?[\w-]+(?:\s|$)/u.test(event.text) || event.text.startsWith("!");
+    const nativeEntry =
+      /^\/(?:skill:)?[\w-]+(?:\s|$)/u.test(event.text) ||
+      event.text.startsWith("!");
     if (!snapshot.enabled || nativeEntry) {
-      prepared = { text: event.text, config: nativeEntry ? { ...snapshot, enabled: false } : snapshot };
+      prepared = {
+        text: event.text,
+        config: nativeEntry ? { ...snapshot, enabled: false } : snapshot,
+      };
       return { action: "continue" };
     }
     if (!protect(event.text, "en").needsTranslation) {
@@ -256,25 +346,42 @@ export function registerTranslation(
     try {
       // Preserve the original before awaiting anything, even if the session is replaced
       // or the process closes while the translator is pending. This entry is not rendered.
-      pi.appendEntry(INPUT, { original: event.text, images: event.images });
+      lastInput = { original: event.text, images: event.images };
+      pi.appendEntry(INPUT, lastInput);
       if (configError) throw new Error(configError);
-      const result = await translateText(ctx.modelRegistry, event.text, "en", snapshot, job.signal);
+      const result = await translateText(
+        ctx.modelRegistry,
+        event.text,
+        "en",
+        snapshot,
+        job.signal,
+      );
       if (ownEpoch !== epoch) return { action: "handled" };
       job.signal.throwIfAborted();
       prepared = { text: result.text, config: snapshot };
-      if (result.changed) pi.appendEntry(INPUT, { original: event.text, translated: result.text, usage: result.usage });
       return { action: "transform", text: result.text, images: event.images };
     } catch (error) {
       if (ownEpoch === epoch) {
         prepared = undefined;
-        fail(ctx, { direction: "input", original: event.text, images: event.images, error: error instanceof Error ? error.message : String(error) });
+        fail(ctx, {
+          direction: "input",
+          original: event.text,
+          images: event.images,
+          error: error instanceof Error ? error.message : String(error),
+        });
         // Never overwrite a new draft; the persistent failure entry is the recovery source.
-        try { if (!ctx.ui.getEditorText()) ctx.ui.setEditorText(event.text); }
-        catch { /* The persisted original (or in-memory recovery) remains available. */ }
+        try {
+          if (!ctx.ui.getEditorText()) ctx.ui.setEditorText(event.text);
+        } catch {
+          /* The persisted original (or in-memory recovery) remains available. */
+        }
       }
       return { action: "handled" };
     } finally {
-      if (ownEpoch === epoch) { inputJob = undefined; status(ctx); }
+      if (ownEpoch === epoch) {
+        inputJob = undefined;
+        status(ctx);
+      }
     }
   });
 
@@ -282,30 +389,51 @@ export function registerTranslation(
     if (ctx.mode !== "tui") return;
     // The input transform and this boundary are pi's native single submission path.
     // An unrelated extension-generated request must never acquire a stale snapshot.
-    const snapshot = prepared?.text === event.prompt ? prepared.config : { ...config, enabled: false };
+    const snapshot =
+      prepared?.text === event.prompt
+        ? prepared.config
+        : { ...config, enabled: false };
     prepared = undefined;
     run = { config: { ...snapshot }, eligible: false, cancelled: false };
     status(ctx);
   });
   pi.on("agent_start", () => {
     // Retry/compaction can start more than one low-level agent loop in one task.
-    if (run) { run.candidate = undefined; run.eligible = false; }
+    if (run) {
+      run.candidate = undefined;
+      run.eligible = false;
+    }
   });
   pi.on("turn_start", () => {
-    if (run) { run.candidate = undefined; run.eligible = false; }
+    if (run) {
+      run.candidate = undefined;
+      run.eligible = false;
+    }
   });
   pi.on("message_start", (event) => {
     // A new queued user input invalidates any earlier 'conclusion', even before turn_start.
-    if (run && event.message.role === "user") { run.candidate = undefined; run.eligible = false; }
+    if (run && event.message.role === "user") {
+      run.candidate = undefined;
+      run.eligible = false;
+    }
   });
   pi.on("turn_end", (event, ctx) => {
     if (!run) return;
     run.candidate = undefined;
     run.signal = ctx.signal;
     const message = event.message;
-    if (message.role !== "assistant" || event.outcome !== "completed" || message.stopReason !== "stop" ||
-        message.content.some((part) => part.type === "toolCall") || event.toolResults.length) return;
-    const text = message.content.filter((part) => part.type === "text").map((part) => part.text).join("\n\n");
+    if (
+      message.role !== "assistant" ||
+      event.outcome !== "completed" ||
+      message.stopReason !== "stop" ||
+      message.content.some((part) => part.type === "toolCall") ||
+      event.toolResults.length
+    )
+      return;
+    const text = message.content
+      .filter((part) => part.type === "text")
+      .map((part) => part.text)
+      .join("\n\n");
     if (text.trim()) run.candidate = { text, id: event.messageEntryId };
   });
   pi.on("agent_before_settle", (event) => {
@@ -316,7 +444,13 @@ export function registerTranslation(
     const finished = run;
     run = undefined;
     prepared = undefined;
-    if (!finished?.config.enabled || !finished.eligible || finished.cancelled || finished.signal?.aborted || !finished.candidate) {
+    if (
+      !finished?.config.enabled ||
+      !finished.eligible ||
+      finished.cancelled ||
+      finished.signal?.aborted ||
+      !finished.candidate
+    ) {
       status(ctx);
       return;
     }
@@ -326,19 +460,38 @@ export function registerTranslation(
     outputJob = job;
     status(ctx);
     try {
-      const result = await translateText(ctx.modelRegistry, text, "zh", finished.config, job.signal);
+      const result = await translateText(
+        ctx.modelRegistry,
+        text,
+        "zh",
+        finished.config,
+        job.signal,
+      );
       if (ownEpoch !== epoch) return;
       job.signal.throwIfAborted();
       if (result.changed) {
         pi.appendEntry(OUTPUT, {
-          original: text, translated: result.text, messageEntryId: id,
-          provider: finished.config.provider, model: finished.config.model, usage: result.usage,
+          original: text,
+          translated: result.text,
+          messageEntryId: id,
+          provider: finished.config.provider,
+          model: finished.config.model,
+          usage: result.usage,
         });
       }
     } catch (error) {
-      if (ownEpoch === epoch) fail(ctx, { direction: "output", original: text, messageEntryId: id, error: error instanceof Error ? error.message : String(error) });
+      if (ownEpoch === epoch)
+        fail(ctx, {
+          direction: "output",
+          original: text,
+          messageEntryId: id,
+          error: error instanceof Error ? error.message : String(error),
+        });
     } finally {
-      if (ownEpoch === epoch) { outputJob = undefined; status(ctx); }
+      if (ownEpoch === epoch) {
+        outputJob = undefined;
+        status(ctx);
+      }
     }
   });
 }
