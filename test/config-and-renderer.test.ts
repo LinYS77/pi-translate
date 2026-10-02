@@ -28,6 +28,7 @@ test("strict configuration, defaults, atomic round trip, corrupt-file error", as
   const dir = await mkdtemp(join(tmpdir(), "pi-translate-config-"));
   try {
     const path = join(dir, "translate.json");
+    assert.equal(defaults.timeoutMs, 600_000);
     assert.deepEqual(await loadConfig(path), defaults);
     const config = {
       ...defaults,
@@ -37,6 +38,10 @@ test("strict configuration, defaults, atomic round trip, corrupt-file error", as
     };
     await saveConfig(path, config);
     assert.deepEqual(await loadConfig(path), config);
+    for (const timeoutMs of [100, 60_000, 600_000, 3_600_000]) {
+      await saveConfig(path, { ...config, timeoutMs });
+      assert.equal((await loadConfig(path)).timeoutMs, timeoutMs);
+    }
     for (const raw of [
       null,
       [],
@@ -44,6 +49,8 @@ test("strict configuration, defaults, atomic round trip, corrupt-file error", as
       { provider: "foo" },
       { model: "" },
       { timeoutMs: 0 },
+      { timeoutMs: 99 },
+      { timeoutMs: 3_600_001 },
       { maxTokens: 1.5 },
       { unknown: 42 },
     ]) {

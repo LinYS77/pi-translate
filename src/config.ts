@@ -12,7 +12,7 @@ export interface Config {
 
 export const defaults: Config = {
   enabled: false,
-  timeoutMs: 60_000,
+  timeoutMs: 600_000,
   maxTokens: 8192,
 };
 
@@ -41,7 +41,7 @@ export function parseConfig(value: unknown): Config {
   if (Boolean(config.provider) !== Boolean(config.model))
     throw new Error("provider 和 model 必须一起配置");
   for (const [key, min, max] of [
-    ["timeoutMs", 100, 600_000],
+    ["timeoutMs", 100, 3_600_000],
     ["maxTokens", 64, 131_072],
   ] as const) {
     if (

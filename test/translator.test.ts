@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { protect, translate } from "../src/translator.ts";
 import { defaults } from "../src/config.ts";
-import { assistant, model, userText } from "./helpers.ts";
+import { assistant, deferred, model, userText } from "./helpers.ts";
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import type { Context, AssistantMessage } from "@earendil-works/pi-ai";
 
@@ -184,6 +184,42 @@ test("empty output and tool calls are rejected", async () => {
     translate(tool.instance, "请检查", "en", config),
     /未完整完成/,
   );
+});
+
+for (const direction of ["en", "zh"] as const) {
+  test(`slow ${direction} translation can finish after one minute without disabling the deadline`, async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const gate = deferred<AssistantMessage>();
+    const r = registry(() => gate.promise);
+    const request = translate(
+      r.instance,
+      direction === "en" ? "请检查" : "Inspect",
+      direction,
+      config,
+    );
+    t.mock.timers.tick(120_000);
+    assert.equal(r.signal?.aborted, false);
+    gate.resolve(assistant(direction === "en" ? "Inspect" : "请检查"));
+    assert.equal((await request).changed, true);
+    t.mock.timers.tick(600_000);
+    assert.equal(
+      r.signal?.aborted,
+      false,
+      "completed request must clear its deadline",
+    );
+  });
+}
+
+test("default deadline is ten minutes even when a provider ignores cancellation", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const r = registry(() => new Promise(() => {}));
+  const request = translate(r.instance, "Inspect", "zh", config);
+  const rejected = assert.rejects(request, /翻译超时（600000ms）/);
+  t.mock.timers.tick(599_999);
+  assert.equal(r.signal?.aborted, false);
+  t.mock.timers.tick(1);
+  await rejected;
+  assert.equal(r.signal?.aborted, true);
 });
 
 test("timeout aborts even a provider that ignores cancellation", async () => {

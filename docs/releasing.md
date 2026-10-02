@@ -1,67 +1,58 @@
 # Release checklist
 
-Package: **`@linys77/pi-translate`**, initial version **0.1.0**.
+Package: **`@linys77/pi-translate`**. The unscoped name belongs to another author.
 
-The unscoped `pi-translate` name belongs to another author. Keep the scoped name; never direct users to that unrelated package. The scope matches the maintainer of `pi-glance`, but publishing still requires a valid npm login and permission for `@linys77`.
+GitHub releases and npm publication are separate. A GitHub release may be created first; the maintainer publishes **that exact tagged commit** to npm afterward. CI never publishes to npm.
 
-## Validate
+## Prepare and validate
 
-From a clean checkout, using Node.js 22.19+ and npm:
+1. Update the version in `package.json` and `package-lock.json` together, and add brief notes at `docs/releases/v<version>.md`.
+2. Run from a clean checkout on Node.js 22.19+:
+
+   ```bash
+   npm ci --ignore-scripts
+   npm run verify
+   npm audit --omit=dev
+   npm publish --dry-run
+   ```
+
+   `verify` checks formatting, strict types, behavioral tests and the actual tarball through Pi's loader. It uses `tar` and cleans up its temporary archive. Only runtime TypeScript, the two READMEs, license, manifest and user-facing behavior docs are packed; no separate build is required.
+3. Review [manual acceptance](acceptance.md) as needed. Fake-provider tests do not prove translation quality or remote-provider availability. The pinned upstream development audit warning is explained in [behavior.md](behavior.md#development).
+4. Commit, push, and confirm CI is green.
+
+## GitHub release
+
+Tag the validated release commit and push the tag. For this release:
 
 ```bash
-npm ci --ignore-scripts
-npm run verify
-npm audit --omit=dev
-npm publish --dry-run
+git tag -a v0.1.1 <release-commit> -m "Release v0.1.1"
+git push origin v0.1.1
 ```
 
-`verify` checks formatting, strict types, behavioral tests and the **actual packed artifact** through Pi's extension loader. The artifact must contain only runtime TypeScript, the two READMEs, license, package manifest and user-facing behavior docs. It must have no tests, CI, release scripts, lockfile, credentials or generated archives. No build step is needed: Pi loads the published TypeScript directly.
+`.github/workflows/release.yml` checks the tagged package version, runs verification, and creates the release from `docs/releases/v0.1.1.md`. It uses GitHub's short-lived token and never overwrites an existing release. Retry through **Actions → GitHub Release → Run workflow**, specifying the existing tag.
 
-The package check uses `tar` and leaves no archive in the repository. `prepublishOnly` runs `verify` again for both a normal publish and `npm publish --dry-run`.
+If that version is already on npm, its recorded `gitHead` must equal the tag. A registry `404` allows the GitHub release to precede npm publication; other registry errors fail the workflow. Never move a published tag.
 
-Review [manual acceptance](acceptance.md) with a real provider and terminal before release. Unit-test text is not evidence of real translation quality. Do not dismiss development audit warnings as runtime-host safety guarantees; the pinned Pi dependency warning is explained in [behavior.md](behavior.md#development).
+## npm publication — maintainer action
 
-## Publish — maintainer action
+Publish from the tag, not a later README or development commit. Use a clean worktree if `main` has moved:
 
-The GitHub Release workflow uses GitHub's short-lived repository token; it does not publish to npm or need a stored personal token. Do not commit an npm token or authenticate through an agent transcript.
+```bash
+git worktree add --detach ../pi-translate-v0.1.1 v0.1.1
+cd ../pi-translate-v0.1.1
+npm ci --ignore-scripts
+npm login --registry=https://registry.npmjs.org
+npm whoami --registry=https://registry.npmjs.org
+npm publish
+```
 
-1. Add release notes at `docs/releases/v<version>.md`, then confirm the version's source commit is pushed and CI is green.
-2. Log in interactively and confirm the account has access to the scope:
+`prepublishOnly` reruns `verify`. `publishConfig` fixes the official registry and public access. Complete any 2FA prompt interactively; never commit a token or paste it into an agent transcript.
 
-   ```bash
-   npm login --registry=https://registry.npmjs.org
-   npm whoami --registry=https://registry.npmjs.org
-   ```
+After publication:
 
-3. Publish from the repository root, completing any requested 2FA approval:
+```bash
+npm view @linys77/pi-translate@0.1.1 version gitHead dist.integrity
+pi update npm:@linys77/pi-translate
+```
 
-   ```bash
-   npm publish
-   ```
-
-   `publishConfig` fixes the official registry and public access. This command performs the real, externally visible release; the dry run does not.
-
-4. Verify the registry metadata and one clean installation:
-
-   ```bash
-   npm view @linys77/pi-translate@0.1.0 version dist.integrity
-   pi -e npm:@linys77/pi-translate@0.1.0
-   ```
-
-   Use a separate test agent directory, or remove another installation of this extension first. Check `/translate`, model selection, Alt+T and a complete translation round. Do not load the npm and Git/local versions together.
-
-5. Only after the npm publish succeeds, tag its **recorded `gitHead`**, not a later documentation commit, and push the tag:
-
-   ```bash
-   published_commit=$(npm view @linys77/pi-translate@0.1.0 gitHead)
-   git tag -a v0.1.0 "$published_commit" -m "Release v0.1.0"
-   git push origin v0.1.0
-   ```
-
-   `.github/workflows/release.yml` verifies that the tag equals the npm version's `gitHead`, then creates the GitHub release using `docs/releases/v0.1.0.md`. It never overwrites an existing release. For a retry or a version published before this workflow existed, use its manual **Run workflow** action with the existing tag. Pushing the workflow or release notes to `main` also checks the manifest's current version, allowing an initial release to be completed without moving its old tag.
-
-6. Confirm the GitHub release is public. Keep README installation examples aligned with the published npm package; publishing a new npm version is required to update the README shipped inside the npm artifact.
-
-## Subsequent versions
-
-Update `package.json` and the lockfile together, rerun validation, and publish a new version. npm versions are immutable; never reuse an existing version. Keep the tag on the commit whose artifact was published.
+Confirm `gitHead` equals `git rev-parse v0.1.1^{commit}` and test in Pi. Do not load npm and Git/local installations together. Version numbers on npm are immutable; corrections require a new version. Updating the README on GitHub does not update the README inside an already-published npm package.

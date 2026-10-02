@@ -48,6 +48,7 @@ This is the extension's only command. There are no subcommands and no changes to
 
 - Off by default. Intermediate messages, thinking, tools and past answers are never translated. Toggling mid-task affects the next task, not the current answer.
 - Providers need working credentials. Use Pi's `/login` or `models.json`; the extension does not store API keys.
+- Translation waits up to **10 minutes** by default (configurable up to 1 hour). Existing `timeoutMs: 60000` settings are preserved; set `600000` and `/reload` to extend them.
 - Input failures block submission and preserve the original. **Restore input** appears in `/translate` when recovery data exists; it never overwrites a draft or submits automatically.
 - Output failures keep the original answer. Code, paths and other recognizable literals are protected; ordinary prose still depends on the translation model's accuracy.
 - TUI only. Native commands and extension-generated inputs pass through unchanged. Requires Pi 0.99.2+ and Node.js 22.19+.

@@ -25,12 +25,14 @@ Default: `~/.pi/agent/pi-translate.json`, following Pi's `getAgentDir()`. `PI_TR
   "enabled": false,
   "provider": "openai",
   "model": "gpt-4.1-mini",
-  "timeoutMs": 60000,
+  "timeoutMs": 600000,
   "maxTokens": 8192
 }
 ```
 
-The example model must be available in your own Pi setup; no provider or credentials are bundled. `enabled` is the saved startup policy. `timeoutMs` accepts 100–600000 ms; `maxTokens` accepts 64–131072 and is capped by the model's output limit.
+The example model must be available in your own Pi setup; no provider or credentials are bundled. `enabled` is the saved startup policy. `timeoutMs` defaults to **600000 ms (10 minutes)** for both directions and accepts 100–3600000 ms (up to 1 hour). This is the extension's total request deadline, including model thinking time; provider or gateway timeouts may still be shorter. Esc and session shutdown still cancel immediately. `maxTokens` accepts 64–131072 and is capped by the model's output limit.
+
+**Upgrading from 0.1.0:** explicit saved values are respected. If your configuration contains `"timeoutMs": 60000`, change it to `600000` and run `/reload`; upgrading the package alone does not replace an explicit timeout.
 
 For advanced edits, use Pi's `/reload` to apply the file. Unknown keys or invalid values are errors, not silent defaults. The file contains no credentials. Selecting a model reloads local model definitions without a network catalog refresh or a paid test request.
 

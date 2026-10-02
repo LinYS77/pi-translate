@@ -1,6 +1,6 @@
 {
   "name": "@linys77/pi-translate",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Chinese/English translation for Pi, without rewriting conversation context",
   "type": "module",
   "keywords": [
