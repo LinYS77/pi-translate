@@ -54,7 +54,7 @@ pi install npm:@linys77/pi-translate
 - 输出失败保留原回答。仅部分片段失败时，失败片段原位保留原文，并明确提示部分翻译。代码块留在本地，行内字面内容仍受保护；普通正文的准确性取决于翻译模型。
 - 仅支持 TUI。原生命令和其他扩展生成的输入保持原样。要求 Pi 0.99.2+、Node.js 22.19+。
 
-更多：[配置与行为](docs/behavior.md) · [手工验收](https://github.com/LinYS77/pi-translate/blob/main/docs/acceptance.md)。
+更多：[配置与行为](docs/behavior.md)。
 
 ## 更新
 
@@ -72,7 +72,7 @@ npm ci --ignore-scripts
 npm run verify
 ```
 
-测试使用临时会话和模拟 provider，不调用付费模型、不读取你的凭据。参见[开发说明](docs/behavior.md#development)与[发布清单](https://github.com/LinYS77/pi-translate/blob/main/docs/releasing.md)。
+测试使用临时会话和模拟 provider，不调用付费模型、不读取你的凭据。参见[开发说明](docs/behavior.md#development)。
 
 ## 许可
 

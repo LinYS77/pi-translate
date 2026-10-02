@@ -1,3 +1,15 @@
 node_modules/
 *.tgz
 coverage/
+
+# Local-only working knowledge and manual/paid-model probes.
+# Keep automated regression tests and the package check tracked.
+/docs/plans/
+/docs/internal/
+/docs/acceptance.md
+/docs/releasing.md
+/docs/releases/*-validation.md
+/scripts/check-tui.py
+/scripts/tui-fixture.ts
+/scripts/evaluate-routing.ts
+/scripts/internal/

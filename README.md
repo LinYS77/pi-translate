@@ -54,7 +54,7 @@ This is the extension's only command. There are no subcommands and no changes to
 - Output failures keep the original answer. If only some passages fail, their source text stays in place with a visible partial-translation warning. Code blocks stay local; inline literals remain protected. Ordinary prose still depends on the model's accuracy.
 - TUI only. Native commands and extension-generated inputs pass through unchanged. Requires Pi 0.99.2+ and Node.js 22.19+.
 
-Details: [configuration and behavior](docs/behavior.md) · [manual checks](https://github.com/LinYS77/pi-translate/blob/main/docs/acceptance.md).
+Details: [configuration and behavior](docs/behavior.md).
 
 ## Update
 
@@ -72,7 +72,7 @@ npm ci --ignore-scripts
 npm run verify
 ```
 
-Tests use temporary sessions and fake providers. They do not call a paid model or read your credentials. See [development](docs/behavior.md#development) and the [release checklist](https://github.com/LinYS77/pi-translate/blob/main/docs/releasing.md).
+Tests use temporary sessions and fake providers. They do not call a paid model or read your credentials. See [development](docs/behavior.md#development).
 
 ## License
 

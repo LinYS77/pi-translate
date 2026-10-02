@@ -105,21 +105,6 @@ npm run verify
 
 `verify` runs formatting, strict TypeScript (including unused-code checks), behavioral tests and an actual tarball load in Pi. `format` applies the shared formatter. CI runs the same checks on Node 22.19.0 and 24. The package check uses `tar`, cleans up its temporary archive and excludes tests, scripts and maintainer docs from publication.
 
-Tests cover real Pi session events, context isolation, failures, native rendering, the one-overlay settings lifecycle, fixed panel dimensions, focus, cancellation, deferred model loading, save rollback and spinner disposal. Tests use fake providers and temporary directories; real model quality needs separate [manual checks](https://github.com/LinYS77/pi-translate/blob/main/docs/acceptance.md). Release steps: [releasing.md](https://github.com/LinYS77/pi-translate/blob/main/docs/releasing.md).
-
-Files:
-
-- `src/index.ts`: entry point, version gate and renderers.
-- `src/extension.ts`: translation lifecycle, task snapshots, status and persisted settings.
-- `src/settings-pane.ts`: one Pi-managed settings interaction with internal submenus.
-- `src/model-picker.ts`: model search using Pi's input and selection components.
-- `src/translation-plan.ts`: source ranges, structure, literal protection, local decisions and assembly.
-- `src/jev-classifier.ts`: typed classifier batches, validation and fallback decisions.
-- `src/translator.ts`: shared fragment translation, local repair and input/output result policies.
-- `src/request-budget.ts`: shared request/token limits, deadline, cancellation and usage.
-- `src/output-view.ts`: native assistant layout, display only.
-- `src/config.ts`: validation and atomic configuration writes.
-
-CI verifies both Pi 0.99.2 and 1.0.0 on Node 22.19.0 and 24. `scripts/evaluate-routing.ts` is an explicitly opt-in real-model check (`--live`; `--translate` additionally needs explicit provider/model environment variables). It sends only synthetic fixtures, never session history. `scripts/check-tui.py` exercises a real Pi PTY with temporary settings; see [acceptance](https://github.com/LinYS77/pi-translate/blob/main/docs/acceptance.md).
+CI verifies Pi 0.99.2 and 1.0.0 on Node 22.19.0 and 24. Regression tests cover task boundaries, context isolation, translation fidelity checks, failures, cancellation, settings and native rendering. They use fake providers and temporary directories, not paid model calls or user credentials. Real-model quality still needs manual review.
 
 The development API is pinned to Pi 0.99.2. Its published shrinkwrap contains a `brace-expansion` audit warning that ordinary npm updates and a root override do not resolve. `npm audit --omit=dev` reports no vulnerabilities; the extension does not bundle Pi or that dependency. Runtime host security also depends on the Pi version you install.
