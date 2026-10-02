@@ -8,12 +8,16 @@ export interface Config {
   model?: string;
   timeoutMs: number;
   maxTokens: number;
+  decisionMode: "local" | "jev";
+  classifierProvider?: string;
+  classifierModel?: string;
 }
 
 export const defaults: Config = {
   enabled: false,
   timeoutMs: 600_000,
   maxTokens: 8192,
+  decisionMode: "local",
 };
 
 export function parseConfig(value: unknown): Config {
@@ -22,7 +26,16 @@ export function parseConfig(value: unknown): Config {
   const raw = value as Record<string, unknown>;
   for (const key of Object.keys(raw)) {
     if (
-      !["enabled", "provider", "model", "timeoutMs", "maxTokens"].includes(key)
+      ![
+        "enabled",
+        "provider",
+        "model",
+        "timeoutMs",
+        "maxTokens",
+        "decisionMode",
+        "classifierProvider",
+        "classifierModel",
+      ].includes(key)
     ) {
       throw new Error(`未知配置项：${key}`);
     }
@@ -30,7 +43,16 @@ export function parseConfig(value: unknown): Config {
   const config = { ...defaults, ...raw } as Config;
   if (typeof config.enabled !== "boolean")
     throw new Error("enabled 必须是布尔值");
-  for (const key of ["provider", "model"] as const) {
+  if (!["local", "jev"].includes(config.decisionMode))
+    throw new Error("decisionMode 必须是 local 或 jev");
+  if (Boolean(config.classifierProvider) !== Boolean(config.classifierModel))
+    throw new Error("classifierProvider 和 classifierModel 必须一起配置");
+  for (const key of [
+    "provider",
+    "model",
+    "classifierProvider",
+    "classifierModel",
+  ] as const) {
     if (
       config[key] !== undefined &&
       (typeof config[key] !== "string" || !config[key]!.trim())

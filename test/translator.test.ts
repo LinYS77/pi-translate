@@ -78,6 +78,37 @@ test("English input and already-Chinese output are exact no-call passthroughs", 
   assert.equal(r.contexts.length, 0);
 });
 
+test("Chinese output with embedded terms is kept without a model call", async () => {
+  const r = registry(async () => {
+    throw new Error("must not call");
+  });
+  const text = "使用 Docker 部署，使用 PyTorch 训练。";
+  assert.equal((await translate(r.instance, text, "zh", config)).text, text);
+  assert.equal(r.contexts.length, 0);
+});
+
+test("immutable blocks stay local and one damaged output segment does not discard other translations", async () => {
+  const r = registry(async (ctx) => {
+    const input = userText(ctx);
+    assert.ok(!input.includes("secret_code"));
+    return assistant(input.startsWith("First") ? "第一段。" : "丢失字面内容");
+  });
+  const text =
+    "First paragraph.\n\n```js\nsecret_code();\n```\n\nKeep `label` unchanged.";
+  const result = await translate(r.instance, text, "zh", config);
+  assert.equal(
+    result.text,
+    "第一段。\n\n```js\nsecret_code();\n```\n\nKeep `label` unchanged.",
+  );
+  assert.equal(result.status, "partial");
+  assert.match(result.warnings!.join(""), /部分段落保留原文/);
+  assert.equal(
+    r.contexts.length,
+    3,
+    "only the damaged segment gets one recovery attempt",
+  );
+});
+
 test("literal labels, code, paths, formulas, identifiers and Markdown survive byte-for-byte", () => {
   const text =
     '把按钮文字改成“保存”，不要改 fooBar 或 snake_case，保持 42、-1.25。\n# 标题\n| 名称 | 数量 |\n| --- | --- |\n| [链接](https://example.com/a?q=b) | 3 |\n路径 src/main.ts 和 /tmp/data，公式 $x + 1$。\n```ts\nconst 中文 = "保存";\n```\n';
@@ -130,6 +161,17 @@ test("link syntax, quoted output literals, unclosed code and mixed English terms
   );
   assert.ok(!terms.masked.includes("gradient accumulation"));
   assert.ok(!terms.masked.includes("PyTorch"));
+});
+
+test("ordinary quoted prose is translated but its numbers remain protected", () => {
+  const p = protect('He said: "Do not retry after 42 seconds."', "zh");
+  assert.ok(p.masked.includes("Do not retry"));
+  assert.ok(!p.prose.includes("42"));
+  assert.throws(() => p.restore(p.masked.replace(/PI_KEEP_\w+?_END/g, "")));
+  assert.equal(
+    p.restore(p.masked),
+    'He said: "Do not retry after 42 seconds."',
+  );
 });
 
 test("mixed Chinese output cannot rewrite pre-existing Han text", () => {

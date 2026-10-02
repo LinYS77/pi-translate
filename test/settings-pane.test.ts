@@ -27,6 +27,8 @@ function pane(
     provider: model.provider,
     model: model.id,
     canRecover: false,
+    timeoutMs: 600000,
+    decisionMode: "local",
     ...initial,
   };
   const terminal = { rows: 40, columns: 80 };
@@ -45,6 +47,14 @@ function pane(
     },
     setDefault: async (enabled) => {
       state.defaultEnabled = enabled;
+      return true;
+    },
+    setTimeout: async (ms) => {
+      state.timeoutMs = ms;
+      return true;
+    },
+    setDecisionMode: async (mode) => {
+      state.decisionMode = mode;
       return true;
     },
     recover: () => undefined,
@@ -75,6 +85,81 @@ function pane(
       component.render(width).map(stripVTControlCharacters).join("\n"),
   };
 }
+
+test("timeout custom seconds saves precisely in the same pane and invalid values stay editable", async () => {
+  let saved = 0;
+  const h = pane(
+    {
+      setTimeout: async (ms) => {
+        saved = ms;
+        h.state.timeoutMs = ms;
+        return true;
+      },
+    },
+    { timeoutMs: 123456 },
+  );
+  try {
+    for (let i = 0; i < 3; i++) h.component.handleInput("\u001b[B");
+    h.component.handleInput("\r");
+    for (let i = 0; i < 6; i++) h.component.handleInput("\u001b[B");
+    h.component.handleInput("\r");
+    assert.ok(h.component.render(76).join("\n").includes(CURSOR_MARKER));
+    h.component.handleInput("\u0015");
+    h.component.handleInput("3601");
+    h.component.handleInput("\r");
+    assert.equal(saved, 0);
+    assert.match(h.text(), /0.1.*3600/);
+    h.component.handleInput("\u0015");
+    h.component.handleInput("123.456");
+    h.component.handleInput("\r");
+    await finishSave(h.component);
+    assert.equal(saved, 123456);
+    assert.equal(h.closes, 0);
+    assert.match(h.text(), /123.456/);
+  } finally {
+    h.component.close();
+  }
+});
+
+test("route changes reveal an independent Jev picker without remounting or changing the chat model", async () => {
+  let kind: boolean | undefined;
+  const h = pane({
+    loadModels: async (_signal, classifier) => {
+      kind = classifier;
+      return [{ ...model, provider: "typesafe", id: "jev-latest" }];
+    },
+    selectModel: async (selected, classifier) => {
+      assert.equal(classifier, true);
+      h.state.classifierProvider = selected.provider;
+      h.state.classifierModel = selected.id;
+      return true;
+    },
+  });
+  try {
+    for (let i = 0; i < 4; i++) h.component.handleInput("\u001b[B");
+    h.component.handleInput("\r");
+    await finishSave(h.component);
+    assert.equal(h.state.decisionMode, "jev");
+    assert.match(h.text(), /判断模型/);
+    h.component.handleInput("\u001b[B");
+    h.component.handleInput("\r");
+    await flushUI();
+    h.component.handleInput("\r");
+    await finishSave(h.component);
+    assert.equal(kind, true);
+    assert.equal(h.state.classifierModel, "jev-latest");
+    assert.equal(h.state.model, model.id);
+    assert.equal(h.closes, 0);
+    h.component.handleInput("\u001b[A");
+    h.component.handleInput("\r");
+    await finishSave(h.component);
+    assert.equal(h.state.decisionMode, "local");
+    assert.equal(h.state.classifierModel, "jev-latest");
+    assert.ok(!h.text().includes("判断模型"));
+  } finally {
+    h.component.close();
+  }
+});
 
 test("search accepts input and IME focus immediately, even while model metadata is loading", async () => {
   const gate = deferred<Model<Api>[]>();

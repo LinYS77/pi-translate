@@ -10,6 +10,37 @@ const other = { ...model, provider: "other", id: "fast" };
 const text = (h: Awaited<ReturnType<typeof harness>>) =>
   h.panes.at(-1)!.render(76).map(stripVTControlCharacters).join("\n");
 
+test("timeout and routing settings persist without changing an active task snapshot or temporary switch", async () => {
+  const h = await harness();
+  try {
+    await h.start("Inspect files.");
+    h.uiSteps.push(async (pane) => {
+      for (let i = 0; i < 3; i++) pane.handleInput("\u001b[B");
+      pane.handleInput("\r");
+      pane.handleInput("\r"); // one minute
+      await finishSave(pane);
+      pane.handleInput("\u001b[B");
+      pane.handleInput("\r"); // Jev
+      await finishSave(pane);
+      pane.handleInput("\u001b");
+    });
+    await h.command();
+    await h.toggle();
+    await h.turn();
+    await h.settle();
+    const output = h.calls.find((c) => c.direction === "zh")!;
+    assert.equal(output.config.timeoutMs, 600000);
+    assert.equal(output.config.decisionMode, "local");
+    const saved = await loadConfig(join(h.dir, "config.json"));
+    assert.equal(saved.timeoutMs, 60000);
+    assert.equal(saved.decisionMode, "jev");
+    assert.equal(saved.enabled, true);
+    assert.match(h.status, /译 off/);
+  } finally {
+    await h.close();
+  }
+});
+
 test("only /translate is registered; one overlay shows current/default state without changing model or draft", async () => {
   const h = await harness(undefined, { enabled: false });
   try {

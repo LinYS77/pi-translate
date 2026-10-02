@@ -5,18 +5,28 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { matchesKey } from "@earendil-works/pi-tui";
 import { defaults, loadConfig, saveConfig, type Config } from "./config.ts";
-import { protect, translate } from "./translator.ts";
+import { translate } from "./translator.ts";
+import { createTranslationPlan } from "./translation-plan.ts";
 import { showTranslationSettings } from "./settings-pane.ts";
+import { isJev } from "./jev-classifier.ts";
 
 export const OUTPUT = "pi-translate.output";
 export const INPUT = "pi-translate.input";
 export const FAILURE = "pi-translate.failure";
+export const NOTICE = "pi-translate.notice";
+export interface NoticeData {
+  message: string;
+  direction: "input" | "output";
+}
 export interface OutputData {
   original: string;
   translated: string;
   messageEntryId: string;
   provider?: string;
   model?: string;
+  status?: "unchanged" | "complete" | "partial";
+  warnings?: string[];
+  failedSegmentIds?: string[];
 }
 interface InputData {
   original: string;
@@ -129,6 +139,28 @@ export function registerTranslation(
       /* A shutting-down UI must not turn a handled input into an execution. */
     }
   };
+  const warningReporter = (
+    ctx: ExtensionContext,
+    direction: NoticeData["direction"],
+    ownEpoch: number,
+    signal: AbortSignal,
+  ) => {
+    const seen = new Set<string>();
+    return (message: string) => {
+      if (ownEpoch !== epoch || signal.aborted || seen.has(message)) return;
+      seen.add(message);
+      try {
+        pi.appendEntry(NOTICE, { direction, message } satisfies NoticeData);
+      } catch {
+        /* UI can still report without persistence. */
+      }
+      try {
+        ctx.ui.notify(message, "warning");
+      } catch {
+        /* Never fail an input hook open. */
+      }
+    };
+  };
   const reload = async (ctx: ExtensionContext) => {
     const ownEpoch = epoch;
     try {
@@ -217,20 +249,49 @@ export function registerTranslation(
             model: config.model,
             error: configError,
             canRecover,
+            timeoutMs: config.timeoutMs,
+            decisionMode: config.decisionMode,
+            classifierProvider: config.classifierProvider,
+            classifierModel: config.classifierModel,
           }),
           toggle: () => {
             if (ownEpoch === epoch) toggle(ctx);
           },
-          loadModels: async (signal) => {
+          loadModels: async (signal, classifier) => {
             await ctx.modelRegistry.refresh({ allowNetwork: false, signal });
             signal.throwIfAborted();
             if (ownEpoch !== epoch) throw new Error("会话已改变");
             const error = ctx.modelRegistry.getError();
             if (error) throw new Error(error);
+            if (classifier) {
+              if (typeof ctx.modelRegistry.getAvailableOfType !== "function")
+                throw new Error("当前 Pi 缺少 classifier 接口，请升级 Pi");
+              const models = await ctx.modelRegistry.getAvailableOfType(
+                "classifier",
+                undefined,
+                { signal },
+              );
+              signal.throwIfAborted();
+              return models.filter(isJev);
+            }
             return ctx.modelRegistry.getAvailable();
           },
-          selectModel: async ({ provider, id }) => {
+          selectModel: async ({ provider, id }, classifier) => {
             if (ownEpoch !== epoch) return false;
+            if (classifier) {
+              const selected = ctx.modelRegistry.findOfType?.(
+                "classifier",
+                provider,
+                id,
+              );
+              if (!selected || !isJev(selected))
+                throw new Error(`找不到 Jev 判断模型 ${provider}/${id}`);
+              return persistSettings(
+                ctx,
+                { classifierProvider: provider, classifierModel: id },
+                ownEpoch,
+              );
+            }
             if (!ctx.modelRegistry.find(provider, id))
               throw new Error(
                 `找不到翻译模型 ${provider}/${id}，请重新选择或检查 pi provider`,
@@ -238,6 +299,10 @@ export function registerTranslation(
             return persistSettings(ctx, { provider, model: id }, ownEpoch);
           },
           setDefault: (enabled) => persistSettings(ctx, { enabled }, ownEpoch),
+          setTimeout: (timeoutMs) =>
+            persistSettings(ctx, { timeoutMs }, ownEpoch),
+          setDecisionMode: (decisionMode) =>
+            persistSettings(ctx, { decisionMode }, ownEpoch),
           recover: () =>
             ownEpoch === epoch ? recoverInput(ctx) : "会话已改变",
         },
@@ -336,12 +401,13 @@ export function registerTranslation(
       };
       return { action: "continue" };
     }
-    if (!protect(event.text, "en").needsTranslation) {
+    if (!createTranslationPlan(event.text, "en").segments.length) {
       prepared = { text: event.text, config: snapshot };
       return { action: "continue" };
     }
     const job = new AbortController();
     inputJob = job;
+    const warn = warningReporter(ctx, "input", ownEpoch, job.signal);
     status(ctx);
     try {
       // Preserve the original before awaiting anything, even if the session is replaced
@@ -355,9 +421,13 @@ export function registerTranslation(
         "en",
         snapshot,
         job.signal,
+        warn,
       );
       if (ownEpoch !== epoch) return { action: "handled" };
       job.signal.throwIfAborted();
+      result.warnings?.forEach(warn);
+      if (result.status === "partial")
+        throw new Error("输入翻译不完整，未提交");
       prepared = { text: result.text, config: snapshot };
       return { action: "transform", text: result.text, images: event.images };
     } catch (error) {
@@ -458,6 +528,7 @@ export function registerTranslation(
     const ownEpoch = epoch;
     const job = new AbortController();
     outputJob = job;
+    const warn = warningReporter(ctx, "output", ownEpoch, job.signal);
     status(ctx);
     try {
       const result = await translateText(
@@ -466,9 +537,11 @@ export function registerTranslation(
         "zh",
         finished.config,
         job.signal,
+        warn,
       );
       if (ownEpoch !== epoch) return;
       job.signal.throwIfAborted();
+      result.warnings?.forEach(warn);
       if (result.changed) {
         pi.appendEntry(OUTPUT, {
           original: text,
@@ -477,10 +550,13 @@ export function registerTranslation(
           provider: finished.config.provider,
           model: finished.config.model,
           usage: result.usage,
+          status: result.status,
+          warnings: result.warnings,
+          failedSegmentIds: result.failedSegmentIds,
         });
       }
     } catch (error) {
-      if (ownEpoch === epoch)
+      if (ownEpoch === epoch && !job.signal.aborted)
         fail(ctx, {
           direction: "output",
           original: text,

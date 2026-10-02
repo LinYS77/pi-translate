@@ -2,67 +2,23 @@ import { randomUUID } from "node:crypto";
 import type { AssistantMessage, Usage } from "@earendil-works/pi-ai";
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import type { Config } from "./config.ts";
+import {
+  createTranslationPlan,
+  protect,
+  type Direction,
+} from "./translation-plan.ts";
+import { RequestBudget } from "./request-budget.ts";
+import { classifySegments, type ClassifierRegistry } from "./jev-classifier.ts";
 
-export type Direction = "en" | "zh";
+export type { Direction } from "./translation-plan.ts";
+export { protect } from "./translation-plan.ts";
 export interface Translation {
   text: string;
   changed: boolean;
+  status?: "unchanged" | "complete" | "partial";
+  warnings?: string[];
+  failedSegmentIds?: string[];
   usage?: Usage;
-}
-
-// Protect syntax/literals locally. The model cannot silently change a protected span:
-// every opaque token must be returned exactly once before restoration is permitted.
-export function protect(text: string, direction: Direction) {
-  const prefix = `PI_KEEP_${randomUUID().replaceAll("-", "")}_`;
-  const spans = new Map<string, string>();
-  const pattern = new RegExp(
-    [
-      // Fenced/indented code, inline code (including multiline spans).
-      "^ {0,3}(`{3,}|~{3,})[^\\n]*\\n[\\s\\S]*?(?:^ {0,3}\\1[\\t ]*(?:\\n|$)|(?![\\s\\S]))",
-      "^(?: {4}|\\t)[^\\n]*(?:\\n|$)",
-      "(`+)[^`]*?\\2",
-      // Math, URLs, link destinations, paths, identifiers, numbers.
-      "\\$\\$[\\s\\S]*?\\$\\$|\\$[^$\\n]+\\$|\\\\\\([\\s\\S]*?\\\\\\)|\\\\\\[[\\s\\S]*?\\\\\\]",
-      "(?<=\\]\\()[^\\n]*?(?=\\))",
-      "https?://[^\\s<>\"'）。，；]+",
-      "(?<![A-Za-z0-9_])[+-]?\\d+(?:[.,]\\d+)*(?:%|\\b)",
-      "(?:[A-Za-z]:\\\\|(?:~|\\.\\.?)?/)[\\w./\\\\@+-]+",
-      "\\b[\\w-]+(?:[./\\\\][\\w-]+)+\\b",
-      "\\b[A-Za-z]+(?:_[A-Za-z0-9]+)+\\b|\\b[a-z]+(?:[A-Z][A-Za-z0-9]*)+\\b|\\b[A-Z][A-Z0-9_]+\\b",
-      // Conservatively treat quotes as literals in both directions. Fidelity beats fluency.
-      "“[^”\\n]*”|「[^」\\n]*」|『[^』\\n]*』|\"(?:\\\\.|[^\"\\\\\\n])*\"|(?<![A-Za-z])'[^'\\n]+'(?![A-Za-z])",
-      ...(direction === "zh"
-        ? ["[\\p{Script=Han}]+"]
-        : ["\\b[A-Za-z][A-Za-z0-9]*(?:[ \\t]+[A-Za-z][A-Za-z0-9]*)*\\b"]),
-    ].join("|"),
-    "gmu",
-  );
-  const masked = text.replace(pattern, (span) => {
-    const token = `${prefix}${spans.size}_END`;
-    spans.set(token, span);
-    return token;
-  });
-  const tokenPattern = new RegExp(`${prefix}\\d+_END`, "g");
-  const prose = masked.replace(tokenPattern, "");
-  return {
-    masked,
-    needsTranslation:
-      direction === "en"
-        ? /\p{Script=Han}/u.test(prose)
-        : /[A-Za-z]/.test(prose),
-    restore(translated: string): string {
-      const remaining = new Set(spans.keys());
-      const restored = translated.replace(tokenPattern, (token) => {
-        if (!remaining.delete(token))
-          throw new Error("译文重复或破坏了受保护内容；已拒绝使用");
-        return spans.get(token)!;
-      });
-      if (remaining.size) throw new Error("译文遗漏了受保护内容；已拒绝使用");
-      if (restored.includes(prefix))
-        throw new Error("译文含有损坏的占位符；已拒绝使用");
-      return restored;
-    },
-  };
 }
 
 function rules(direction: Direction): string {
@@ -96,72 +52,135 @@ function completeText(message: AssistantMessage): string {
   return text;
 }
 
-/** Also enforces a deadline against providers that ignore AbortSignal. No partial text escapes. */
+/** The main model never sees a partial input; output may preserve failed source segments. */
 export async function translate(
-  registry: Pick<ModelRegistry, "find" | "streamSimple">,
+  registry: Pick<ModelRegistry, "find" | "streamSimple"> & ClassifierRegistry,
   text: string,
   direction: Direction,
   config: Config,
   parentSignal?: AbortSignal,
+  onWarning?: (message: string) => void,
 ): Promise<Translation> {
   parentSignal?.throwIfAborted();
-  const protectedText = protect(text, direction);
-  if (!protectedText.needsTranslation) return { text, changed: false };
-  if (!config.provider || !config.model)
-    throw new Error("未配置翻译模型：用 /translate 打开设置菜单选择模型");
-  const model = registry.find(config.provider, config.model);
-  if (!model)
-    throw new Error(`找不到翻译模型 ${config.provider}/${config.model}`);
-
-  const controller = new AbortController();
-  const abort = () =>
-    controller.abort(parentSignal?.reason ?? new Error("翻译已取消"));
-  parentSignal?.addEventListener("abort", abort, { once: true });
-  const timer = setTimeout(
-    () => controller.abort(new Error(`翻译超时（${config.timeoutMs}ms）`)),
-    config.timeoutMs,
-  );
-  let onAbort: () => void = () => {};
+  const plan = createTranslationPlan(text, direction);
+  if (!plan.segments.length) return { text, changed: false };
+  const budget = new RequestBudget(config.timeoutMs, parentSignal);
+  const warnings: string[] = [];
+  const warn = (message: string) => {
+    warnings.push(message);
+    onWarning?.(message);
+  };
+  const replacements = new Map<string, string>();
+  const failedSegmentIds: string[] = [];
+  const errors: string[] = [];
   try {
-    const cancelled = new Promise<never>((_, reject) => {
-      onAbort = () => reject(controller.signal.reason);
-      controller.signal.addEventListener("abort", onAbort, { once: true });
-    });
-    const response = await Promise.race([
-      // This is the entire request: no history, main system prompt, tools or attachments.
-      registry
-        .streamSimple(
-          model,
-          {
-            systemPrompt: rules(direction),
-            messages: [
-              {
-                role: "user",
-                content: protectedText.masked,
-                timestamp: Date.now(),
-              },
-            ],
-          },
-          {
-            signal: controller.signal,
-            maxTokens: Math.min(config.maxTokens, model.maxTokens),
-            cacheRetention: "none",
-            sessionId: randomUUID(),
-          },
-        )
-        .result(),
-      cancelled,
-    ]);
-    controller.signal.throwIfAborted();
-    const translated = protectedText.restore(completeText(response));
+    const decisions =
+      config.decisionMode === "jev"
+        ? await classifySegments(
+            registry,
+            plan.segments,
+            direction,
+            config,
+            budget,
+            (message) => {
+              if (!warnings.length) warn(message);
+            },
+          )
+        : new Map<string, "translate" | "keep">();
+    const selected = plan.segments.filter(
+      (segment) => (decisions.get(segment.id) ?? segment.local) === "translate",
+    );
+    if (!selected.length)
+      return warnings.length
+        ? { text, changed: false, warnings, usage: budget.usage }
+        : {
+            text,
+            changed: false,
+            ...(budget.usage ? { usage: budget.usage } : {}),
+          };
+    if (!config.provider || !config.model)
+      throw new Error("未配置翻译模型：用 /translate 打开设置菜单选择模型");
+    const model = registry.find(config.provider, config.model);
+    if (!model)
+      throw new Error(`找不到翻译模型 ${config.provider}/${config.model}`);
+    for (const segment of selected) {
+      parentSignal?.throwIfAborted();
+      try {
+        budget.signal.throwIfAborted();
+        const protectedText = protect(segment.text, direction);
+        const context = {
+          systemPrompt: rules(direction),
+          messages: [
+            {
+              role: "user" as const,
+              content: protectedText.masked,
+              timestamp: Date.now(),
+            },
+          ],
+        };
+        const inputSize = Buffer.byteLength(JSON.stringify(context)) + 200; // Includes the optional repair instruction.
+        // Reserve conservatively (UTF-8 bytes rather than an optimistic chars/token estimate).
+        const maxTokens = Math.min(config.maxTokens, model.maxTokens);
+        if (inputSize + maxTokens > model.contextWindow)
+          throw new Error("片段超出翻译模型容量，未截断原文");
+        for (let attempt = 0; attempt < 2; attempt++) {
+          const response = await budget.request(
+            (signal) =>
+              registry
+                .streamSimple(
+                  model,
+                  attempt
+                    ? {
+                        ...context,
+                        systemPrompt:
+                          context.systemPrompt +
+                          "\nA previous attempt failed literal-integrity checks. Translate the ORIGINAL fragment again; copy every opaque token exactly once. Do not guess, drop or duplicate any token.",
+                      }
+                    : context,
+                  {
+                    signal,
+                    maxTokens,
+                    cacheRetention: "none",
+                    sessionId: randomUUID(),
+                  },
+                )
+                .result(),
+            inputSize + maxTokens,
+          );
+          budget.record(response.usage);
+          const complete = completeText(response);
+          try {
+            const translated = protectedText.restore(complete).trim();
+            replacements.set(segment.id, translated);
+            break;
+          } catch (error) {
+            // Only literal integrity errors get one bounded recovery. No retries on cancel/error/length.
+            if (attempt) throw error;
+          }
+        }
+      } catch (error) {
+        parentSignal?.throwIfAborted();
+        if (direction === "en") throw error;
+        failedSegmentIds.push(segment.id);
+        errors.push(error instanceof Error ? error.message : String(error));
+      }
+    }
+    parentSignal?.throwIfAborted();
+    if (!replacements.size) throw new Error(errors[0] ?? "没有可用译文");
+    const translated = plan.assemble(replacements);
+    if (failedSegmentIds.length)
+      warn(
+        `部分段落保留原文（${failedSegmentIds.length} 段）：${[...new Set(errors)].join("；")}`,
+      );
     return {
       text: translated,
       changed: translated !== text,
-      usage: response.usage,
+      status: failedSegmentIds.length ? "partial" : "complete",
+      failedSegmentIds,
+      warnings,
+      usage: budget.usage,
     };
   } finally {
-    clearTimeout(timer);
-    parentSignal?.removeEventListener("abort", abort);
-    controller.signal.removeEventListener("abort", onAbort);
+    budget.dispose();
   }
 }

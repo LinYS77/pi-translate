@@ -29,7 +29,7 @@ Use one installation source. Remove an existing Git/local install before switchi
 ## Features
 
 - **Bidirectional** — Chinese input becomes English after submission; the final answer gets a Chinese translation when the task settles.
-- **Independent model** — one translation model for both directions, using Pi's configured providers. Your main model stays unchanged.
+- **Independent models** — one translation model for both directions; optional Jev classification decides which passages need translation. Your main model stays unchanged.
 - **Quiet status** — `Alt+T` toggles translation; `译 on` / `译 off` shows the state. A single spinner appears while translating.
 - **Native output** — translations use Pi's assistant layout, without an extra label. Original answers stay visible.
 - **Context isolation** — translations are display-only. No history, tools, project files or images are sent to the translator.
@@ -38,7 +38,7 @@ No runtime dependencies to install separately. No telemetry.
 
 ## Configure
 
-Run `/translate` for **Translation model**, **Current switch**, and **New-session default**. Arrows navigate, `Enter` changes, and `Esc` closes. Model search stays in the same Pi-managed panel; `Esc` returns to the menu.
+Run `/translate` to choose the **Translation model**, **Timeout**, **Decision route** (local rules or Jev), **Current switch**, and **New-session default**. Jev has its own classifier model picker. Arrows navigate, `Enter` changes, and `Esc` returns or closes; everything stays in one Pi-managed panel.
 
 Models and startup defaults are saved automatically. The current switch is temporary. Configure the model once; new conversations reuse it.
 
@@ -48,9 +48,10 @@ This is the extension's only command. There are no subcommands and no changes to
 
 - Off by default. Intermediate messages, thinking, tools and past answers are never translated. Toggling mid-task affects the next task, not the current answer.
 - Providers need working credentials. Use Pi's `/login` or `models.json`; the extension does not store API keys.
-- Translation waits up to **10 minutes** by default (configurable up to 1 hour). Existing `timeoutMs: 60000` settings are preserved; set `600000` and `/reload` to extend them.
+- Each translation has a **10-minute** total deadline by default, including classification and recovery. Change it in `/translate` (up to 1 hour). Existing explicit values are preserved.
+- Local rules are the default. Jev uses Pi's classifier credentials; unavailable or uncertain judgments visibly fall back to local rules. Jev is not a translator and is less reliable on CJK text.
 - Input failures block submission and preserve the original. **Restore input** appears in `/translate` when recovery data exists; it never overwrites a draft or submits automatically.
-- Output failures keep the original answer. Code, paths and other recognizable literals are protected; ordinary prose still depends on the translation model's accuracy.
+- Output failures keep the original answer. If only some passages fail, their source text stays in place with a visible partial-translation warning. Code blocks stay local; inline literals remain protected. Ordinary prose still depends on the model's accuracy.
 - TUI only. Native commands and extension-generated inputs pass through unchanged. Requires Pi 0.99.2+ and Node.js 22.19+.
 
 Details: [configuration and behavior](docs/behavior.md) · [manual checks](https://github.com/LinYS77/pi-translate/blob/main/docs/acceptance.md).

@@ -42,6 +42,9 @@ try {
     "README.zh-CN.md",
     "docs/behavior.md",
     "package.json",
+    "src/translation-plan.ts",
+    "src/jev-classifier.ts",
+    "src/request-budget.ts",
   ]) {
     assert.ok(
       packed.files.some((file: { path: string }) => file.path === path),
@@ -97,6 +100,7 @@ try {
   assert.deepEqual([...extension.shortcuts.keys()], ["alt+t"]);
   assert.ok(extension.handlers.has("agent_settled"));
   assert.ok(extension.entryRenderers?.has("pi-translate.output"));
+  assert.ok(extension.entryRenderers?.has("pi-translate.notice"));
   console.log(
     `Package verified: ${packed.name}@${packed.version}, ${packed.files.length} files, ${(packed.size / 1024).toFixed(1)} KiB. Actual tarball loads in Pi.`,
   );

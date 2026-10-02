@@ -10,6 +10,8 @@ import { Container, Text } from "@earendil-works/pi-tui";
 import {
   FAILURE,
   OUTPUT,
+  NOTICE,
+  type NoticeData,
   registerTranslation,
   type FailureData,
   type OutputData,
@@ -45,6 +47,10 @@ export default function (pi: ExtensionAPI) {
       outputPad: settings.getOutputPad(),
       codeBlockIndent: settings.getCodeBlockIndent(),
     });
+  });
+  pi.registerEntryRenderer<NoticeData>(NOTICE, (entry, _options, theme) => {
+    if (!entry.data?.message) return;
+    return new Text(theme.fg("warning", entry.data.message), 1, 0);
   });
   pi.registerEntryRenderer<FailureData>(FAILURE, (entry, _options, theme) => {
     if (!entry.data) return;

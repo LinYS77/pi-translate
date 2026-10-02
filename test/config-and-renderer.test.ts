@@ -64,6 +64,25 @@ test("strict configuration, defaults, atomic round trip, corrupt-file error", as
   }
 });
 
+test("routing config defaults locally, preserves explicit legacy values and validates classifier pairs", () => {
+  const legacy = parseConfig({ enabled: true, timeoutMs: 123456 });
+  assert.equal(legacy.decisionMode, "local");
+  assert.equal(legacy.timeoutMs, 123456);
+  const jev = parseConfig({
+    decisionMode: "jev",
+    classifierProvider: "typesafe",
+    classifierModel: "jev-latest",
+  });
+  assert.equal(jev.decisionMode, "jev");
+  for (const raw of [
+    { decisionMode: "auto" },
+    { classifierModel: "jev-latest" },
+    { classifierProvider: "" },
+    { classifierModel: 42 },
+  ])
+    assert.throws(() => parseConfig(raw));
+});
+
 test("translated entries use exactly native assistant spacing and Markdown, without a label", () => {
   initTheme("dark", false);
   const renderers = new Map<string, EntryRenderer<any>>();

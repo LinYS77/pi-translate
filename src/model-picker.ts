@@ -1,4 +1,3 @@
-import type { Api, Model } from "@earendil-works/pi-ai";
 import {
   getSelectListTheme,
   type Theme,
@@ -13,12 +12,18 @@ import {
   type KeybindingsManager,
 } from "@earendil-works/pi-tui";
 
+export interface ModelChoice {
+  provider: string;
+  id: string;
+  name: string;
+}
+
 /** A session-independent picker: selecting never touches pi's main model or defaults. */
 export class TranslationModelPicker extends Container implements Focusable {
   private readonly search: Input;
   private readonly listHost = new Container();
   private list!: SelectList;
-  private models: Model<Api>[];
+  private models: ModelChoice[];
   private _focused = false;
   private loading = false;
   private maxVisible: number;
@@ -32,11 +37,11 @@ export class TranslationModelPicker extends Container implements Focusable {
   }
 
   constructor(
-    models: readonly Model<Api>[],
+    models: readonly ModelChoice[],
     private readonly current: { provider?: string; model?: string },
     private readonly theme: Theme,
     private readonly keybindings: KeybindingsManager,
-    private readonly done: (model: Model<Api> | undefined) => void,
+    private readonly done: (model: ModelChoice | undefined) => void,
     maxVisible = 6,
   ) {
     super();
@@ -53,8 +58,8 @@ export class TranslationModelPicker extends Container implements Focusable {
     this.updateList();
   }
 
-  private sortModels(models: readonly Model<Api>[]) {
-    const isCurrent = (m: Model<Api>) =>
+  private sortModels(models: readonly ModelChoice[]) {
+    const isCurrent = (m: ModelChoice) =>
       m.provider === this.current.provider && m.id === this.current.model;
     return [...models].sort(
       (a, b) =>
@@ -63,7 +68,7 @@ export class TranslationModelPicker extends Container implements Focusable {
         a.id.localeCompare(b.id),
     );
   }
-  setModels(models: readonly Model<Api>[]) {
+  setModels(models: readonly ModelChoice[]) {
     this.loading = false;
     this.models = this.sortModels(models);
     this.updateList(true);

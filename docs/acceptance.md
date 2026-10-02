@@ -20,6 +20,9 @@
 - 保存期间再次 Enter 不产生重复写入；写入失败时原值恢复且错误在面板内显示。
 - 模型和默认开关更改后自动保存；Esc 在选模中返回，在主菜单中关闭。取消设置不切换主模型，也不取消活动任务的最终翻译。
 - 在菜单中改变“新对话默认”：保存后当前开关保持原样，新对话按该值初始化。
+- “翻译超时”可选择预设或自定义秒数；`123.456` 应精确保存为 `123456` ms，`0.099` / `3600.001` 应报错且可继续编辑。Esc 取消不保存。
+- “判断方式”切到 Jev 后显示独立判断模型；只列可用 Jev classifier，搜索/取消不改变翻译模型或主模型。切回本地隐藏该项但保留选择。
+- 正在执行时更改超时、路线或任一模型：本任务输出仍使用原快照，后续任务才使用新配置。
 - 临时关闭后换模型，再新建对话，默认开关仍应保持原先保存值，不能被临时开关覆盖。
 - 页脚显示 `译 on` / `译 off`；翻译时只追加一个动态 spinner（如 `⠹`），不显示方向文字，完成/失败/取消后停止。只有当前任务快照不同、缺少模型或配置错误时显示其他补充文字。
 - 切换会话、`/reload` 或退出时不应残留动画，也不能用旧定时器更新新会话。
@@ -68,7 +71,9 @@
 - assistant 的原回答未被替换。
 - 中文译文位于 `type: "custom"`、`customType: "pi-translate.output"` 的 entry，不是 `custom_message` 或 user message。
 - 用 SDK 的 `sessionManager.buildSessionContext().messages` 检查，中文译文不在上下文中。
-- 若 provider 有调试请求日志，翻译请求只能有翻译规则和这一份文本（字面部分是占位符）；没有历史、主系统提示、项目文件或工具结果。
+- 若 provider 有调试请求日志，翻译请求只能有翻译规则和当前文本中的待翻译片段（少量行内字面部分是占位符）；整块代码和未选中的段落不送出。没有历史、主系统提示、项目文件或工具结果。
+- Jev 请求只有当前文本候选、目标语言和固定问题，使用 classifier 接口而非 chat；每个问题说明其候选 ID。
+- 回退/局部降级提示是 `pi-translate.notice` custom entry，不进入 `buildSessionContext()`。
 
 ## 失败与恢复
 
@@ -78,6 +83,36 @@
 4. 在主任务进行时让翻译 provider 不可用：最终输出翻译失败，但主任务不会重跑，原回答仍可阅读。
 5. 输入/输出翻译过程中按 Esc、切换会话或退出：没有迟到的译文出现在新会话。输入请求前的原文备份留在原会话。
 6. 恢复正常配置。失败输入只能由用户主动重交，扩展不自动重放。
+
+## 双路线与局部恢复
+
+- 两条路线分别检查：`使用 Docker 部署，使用 PyTorch 训练。` 不重复翻译；`已完成。Warning: do not retry.` 必须翻译英文警告；`STOP` 不能因全大写而被误当成代码。
+- 普通引用 `He said: "Do not retry after 42 seconds."` 可以翻译，数值仍保留；明确按钮标签/字面字符串保持原文。
+- 注入一个片段丢失占位符：最多一次局部恢复；其它片段不重跑。输入最终失败则不提交任何片段，输出则原位保留失败片段并提示“部分段落保留原文”。
+- 全部输出片段失败时只显示失败，不重复展示一次完整原文。正常译文无标题；局部失败警告不能被隐藏。
+- Jev 模型缺失、服务报错、低置信度、缺答案：每次操作最多一次分类回退提示；本地规则继续工作。取消不触发回退或新的请求。
+- 多个片段共用总期限，不能每段重新计时。输出超时可保留已完成片段；Esc/会话替换则丢弃整个待显示结果，不追加迟到内容。
+
+## 可重复检查工具
+
+默认测试与离线样例不调用真实 provider：
+
+```bash
+npm run verify
+npx tsx scripts/evaluate-routing.ts
+python3 scripts/check-tui.py node_modules/@earendil-works/pi-coding-agent/dist/cli.js
+# 可选第二个路径：已安装 pi-glance 的 index.ts；同时检查有/无 glance
+```
+
+真实分类评估需显式选择 `--live`，使用 Pi 中已配置的 `typesafe/jev-latest`。仅发送 `test/fixtures/routing.ts` 中的合成样例，不读取历史会话。双向翻译实测还需显式指定翻译模型：
+
+```bash
+npx tsx scripts/evaluate-routing.ts --live
+PI_TRANSLATE_EVAL_PROVIDER=deepseek PI_TRANSLATE_EVAL_MODEL=deepseek-flash \
+  npx tsx scripts/evaluate-routing.ts --live --translate
+```
+
+这些命令可能产生 provider 费用。Jev 对 CJK 的已知限制与小样本结论必须同时记录；不能将低样本错误率宣称为通用准确率。
 
 ## 阅读体验
 
