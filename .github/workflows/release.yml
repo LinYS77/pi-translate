@@ -1,0 +1,81 @@
+name: GitHub Release
+
+on:
+  push:
+    tags: ["v*"]
+    # Bootstrap an already-published version, or retry when its notes are added.
+    branches: [main]
+    paths:
+      - .github/workflows/release.yml
+      - docs/releases/*.md
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag whose version is published to npm
+        required: true
+        default: v0.1.0
+
+permissions:
+  contents: write
+
+concurrency:
+  group: github-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Verify the tag matches the published npm commit
+        id: published
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          node --input-type=module <<'JS'
+          import assert from "node:assert/strict";
+          import { execFileSync } from "node:child_process";
+          import { appendFileSync, existsSync, readFileSync } from "node:fs";
+
+          const manifest = JSON.parse(readFileSync("package.json", "utf8"));
+          const tag = process.env.INPUT_TAG || (process.env.GITHUB_REF.startsWith("refs/tags/")
+            ? process.env.GITHUB_REF.slice("refs/tags/".length) : `v${manifest.version}`);
+          assert.match(tag, /^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/);
+          const version = tag.slice(1);
+          const response = await fetch(`https://registry.npmjs.org/${encodeURIComponent(manifest.name)}/${version}`, {
+            signal: AbortSignal.timeout(30_000),
+          });
+          assert.ok(response.ok, `npm ${version} is not available: HTTP ${response.status}`);
+          const published = await response.json();
+          assert.equal(published.name, manifest.name);
+          assert.equal(published.version, version);
+          const commit = execFileSync("git", ["rev-parse", `${tag}^{commit}`], { encoding: "utf8" }).trim();
+          assert.equal(commit, published.gitHead, "Tag must point to the exact commit published to npm");
+          const notes = `docs/releases/${tag}.md`;
+          assert.ok(existsSync(notes), `Missing release notes: ${notes}`);
+          appendFileSync(process.env.GITHUB_OUTPUT, `tag=${tag}\nnotes=${notes}\nprerelease=${version.includes("-")}\n`);
+          console.log(`Verified ${manifest.name}@${version}: ${tag} -> ${commit}`);
+          JS
+      - name: Create the release if it does not exist
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ steps.published.outputs.tag }}
+          NOTES: ${{ steps.published.outputs.notes }}
+          PRERELEASE: ${{ steps.published.outputs.prerelease }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; leaving it unchanged."
+            exit 0
+          fi
+          flags=()
+          if [ "$PRERELEASE" = "true" ]; then
+            flags+=(--prerelease)
+          fi
+          gh release create "$TAG" --verify-tag --title "$TAG" --notes-file "$NOTES" "${flags[@]}"

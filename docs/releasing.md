@@ -23,9 +23,9 @@ Review [manual acceptance](acceptance.md) with a real provider and terminal befo
 
 ## Publish — maintainer action
 
-No CI job publishes automatically. Do not commit an npm token or authenticate through an agent transcript.
+The GitHub Release workflow uses GitHub's short-lived repository token; it does not publish to npm or need a stored personal token. Do not commit an npm token or authenticate through an agent transcript.
 
-1. Confirm `main` is committed, pushed and CI is green.
+1. Add release notes at `docs/releases/v<version>.md`, then confirm the version's source commit is pushed and CI is green.
 2. Log in interactively and confirm the account has access to the scope:
 
    ```bash
@@ -50,14 +50,17 @@ No CI job publishes automatically. Do not commit an npm token or authenticate th
 
    Use a separate test agent directory, or remove another installation of this extension first. Check `/translate`, model selection, Alt+T and a complete translation round. Do not load the npm and Git/local versions together.
 
-5. Only after the publish succeeds, tag that exact commit and push the tag:
+5. Only after the npm publish succeeds, tag its **recorded `gitHead`**, not a later documentation commit, and push the tag:
 
    ```bash
-   git tag -a v0.1.0 -m "Release v0.1.0"
+   published_commit=$(npm view @linys77/pi-translate@0.1.0 gitHead)
+   git tag -a v0.1.0 "$published_commit" -m "Release v0.1.0"
    git push origin v0.1.0
    ```
 
-6. Remove the “first release pending” note from both READMEs and make npm the primary installation example. A GitHub release is optional; it should point to the published commit, not a later documentation change.
+   `.github/workflows/release.yml` verifies that the tag equals the npm version's `gitHead`, then creates the GitHub release using `docs/releases/v0.1.0.md`. It never overwrites an existing release. For a retry or a version published before this workflow existed, use its manual **Run workflow** action with the existing tag. Pushing the workflow or release notes to `main` also checks the manifest's current version, allowing an initial release to be completed without moving its old tag.
+
+6. Confirm the GitHub release is public. Keep README installation examples aligned with the published npm package; publishing a new npm version is required to update the README shipped inside the npm artifact.
 
 ## Subsequent versions
 
