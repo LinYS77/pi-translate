@@ -86,6 +86,58 @@ function pane(
   };
 }
 
+test("all seven settings are visible when the panel has room, without a needless scroll counter", () => {
+  const h = pane(
+    {},
+    {
+      canRecover: true,
+      decisionMode: "jev",
+      classifierProvider: "typesafe",
+      classifierModel: "jev-latest",
+    },
+  );
+  try {
+    for (const rows of [40, 18, 14]) {
+      h.terminal.rows = rows;
+      const text = h.text();
+      for (const label of [
+        "翻译模型",
+        "当前开关",
+        "新对话默认",
+        "恢复输入",
+        "翻译超时",
+        "判断方式",
+        "判断模型",
+      ])
+        assert.ok(text.includes(label), `${rows} rows: missing ${label}`);
+      assert.ok(!/\(\d+\/7\)/.test(text));
+      assert.ok(text.includes("Esc"));
+    }
+  } finally {
+    h.component.close();
+  }
+});
+
+test("a short panel scrolls around the selection and growing it reveals all settings without resetting selection", () => {
+  const h = pane({}, { canRecover: true, decisionMode: "jev" });
+  try {
+    for (let i = 0; i < 6; i++) h.component.handleInput("\u001b[B");
+    h.terminal.rows = 10;
+    assert.match(h.text(), /→ 判断模型/);
+    assert.ok(h.text().includes("(7/7)"));
+    assert.ok(h.text().includes("Esc"));
+    assert.ok(!h.text().includes("翻译模型"));
+    assert.ok(h.component.render(76).length <= 8);
+    h.terminal.rows = 40;
+    assert.match(h.text(), /→ 判断模型/);
+    assert.ok(h.text().includes("翻译模型"));
+    assert.ok(!h.text().includes("(7/7)"));
+    assert.equal(h.closes, 0);
+  } finally {
+    h.component.close();
+  }
+});
+
 test("timeout custom seconds saves precisely in the same pane and invalid values stay editable", async () => {
   let saved = 0;
   const h = pane(

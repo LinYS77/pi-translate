@@ -133,7 +133,7 @@ export class TranslationSettingsPane implements Component, Focusable {
       });
     return new SettingsList(
       items,
-      4,
+      items.length, // The panel owns clipping; a second four-row viewport wastes space.
       getSettingsListTheme(),
       (id, value) => {
         if (id === "enabled") {
@@ -380,8 +380,18 @@ export class TranslationSettingsPane implements Component, Focusable {
     const selectedIndex = content.findIndex((line) =>
       line.startsWith(getSettingsListTheme().cursor),
     );
-    const start = Math.max(0, selectedIndex - available + 1);
-    const body = content.slice(start, start + available);
+    const showCounter =
+      !this.picker &&
+      !this.timeoutOpen &&
+      content.length > available &&
+      available > 1;
+    const visibleRows = Math.max(1, available - (showCounter ? 1 : 0));
+    const start = Math.max(0, selectedIndex - visibleRows + 1);
+    const body = content.slice(start, start + visibleRows);
+    if (showCounter)
+      body.push(
+        this.theme.fg("dim", `  (${selectedIndex + 1}/${content.length})`),
+      );
     // Keep outer bounds stable through loading, searching and returning to the menu.
     const lines = [
       ...this.border.render(width),

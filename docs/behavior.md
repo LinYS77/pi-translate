@@ -4,7 +4,7 @@
 
 `/translate` is the only extension command and accepts no arguments. `Alt+T` is the quick switch. Configuration stays in a single Pi-managed overlay (`ctx.ui.custom`); returning from search or changing a value does not replace the input editor or reopen the panel. It does not integrate with Pi's `/settings`.
 
-The menu stays in one overlay, including model search and the custom timeout editor:
+The menu stays in one overlay, including model search and the custom timeout editor. It shows all available settings when the panel has room; shorter windows scroll around the selected item without resetting selection on resize:
 
 | Setting | Behavior |
 | --- | --- |
