@@ -8,6 +8,12 @@ import type {
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { translate } from "../src/translator.ts";
 import { defaults } from "../src/config.ts";
+import {
+  classifySegments,
+  type JudgmentDiagnostic,
+} from "../src/jev-classifier.ts";
+import { createTranslationPlan } from "../src/translation-plan.ts";
+import { RequestBudget } from "../src/request-budget.ts";
 import { NOTICE, OUTPUT } from "../src/extension.ts";
 import {
   assistant,
@@ -65,6 +71,105 @@ const choice = (value: string, probability = 0.99) => ({
   },
 });
 
+test("opt-in diagnostics distinguish rejection causes without exposing text or weakening gates", async () => {
+  const answers = [
+    undefined,
+    { ...choice("translate"), confidence: 0.49 },
+    choice("translate", 0.7),
+    {
+      ...choice("translate"),
+      probabilities: { translate: 0.9, keep: 0.9, uncertain: 0 },
+    },
+    {
+      ...choice("uncertain"),
+      probabilities: { translate: 0, keep: 0, uncertain: 1 },
+    },
+    choice("translate"),
+  ];
+  // A low-probability answer must otherwise have a valid normalized distribution.
+  answers[2] = {
+    ...choice("translate", 0.7),
+    probabilities: { translate: 0.7, keep: 0.3, uncertain: 0 },
+  };
+  const h = setup((ctx) => ({
+    answers: Object.fromEntries(
+      Object.keys(ctx.questions).flatMap((id, i) =>
+        answers[i] ? [[id, answers[i]!]] : [],
+      ),
+    ),
+  }));
+  const source = Array.from({ length: 6 }, () => "Private phrase.").join(
+    "\n\n",
+  );
+  const plan = createTranslationPlan(source, "zh");
+  const diagnostics: JudgmentDiagnostic[] = [];
+  const budget = new RequestBudget(1000);
+  try {
+    const decisions = await classifySegments(
+      h.registry,
+      plan.segments,
+      "zh",
+      config,
+      budget,
+      (d) => diagnostics.push(d),
+    );
+    assert.deepEqual(
+      diagnostics.map((d) => d.reason),
+      [
+        "missing-answer",
+        "low-confidence",
+        "low-probability",
+        "invalid-distribution",
+        "uncertain",
+        "accepted",
+      ],
+    );
+    assert.equal(decisions.size, 1);
+    assert.ok(!JSON.stringify(diagnostics).includes("Private"));
+  } finally {
+    budget.dispose();
+  }
+});
+
+test("Chinese inside protected literals does not turn clear English into a language ambiguity", async () => {
+  const h = setup(() => {
+    throw new Error("must not classify protected literals");
+  });
+  const source = "Warning: do not edit `中文目录` or the label “保存”.";
+  const result = await translate(h.registry, source, "zh", config);
+  assert.equal(h.classifications.length, 0);
+  assert.ok(result.text.includes("`中文目录`"));
+  assert.ok(result.text.includes("“保存”"));
+});
+
+test("clear English prose stays local and cannot be voted away by Jev", async () => {
+  const h = setup((ctx) => ({
+    answers: Object.fromEntries(
+      Object.keys(ctx.questions).map((id) => [id, choice("keep")]),
+    ),
+  }));
+  const result = await translate(
+    h.registry,
+    "Warning: do not retry.\n\nInspect the files first.\n\n使用 Docker 部署。",
+    "zh",
+    config,
+  );
+  assert.equal(h.classifications.length, 1);
+  assert.deepEqual(
+    (h.classifications[0].state.segments as { text: string }[]).map(
+      (s) => s.text,
+    ),
+    ["使用 Docker 部署。"],
+  );
+  assert.equal(h.chats.length, 2);
+  assert.ok(result.text.startsWith("警告"));
+  const plan = createTranslationPlan("Warning: do not retry.", "zh");
+  assert.equal(
+    plan.select(new Map([[plan.segments[0].id, "keep"]])).segments.length,
+    1,
+  );
+});
+
 test("invalid, missing or uncertain answers silently fall back without losing valid decisions", async () => {
   const h = setup((ctx) => {
     const ids = Object.keys(ctx.questions);
@@ -79,7 +184,7 @@ test("invalid, missing or uncertain answers silently fall back without losing va
   const warnings: string[] = [];
   const result = await translate(
     h.registry,
-    "Docker.\n\nWarning: do not retry.\n\nWarning: unsafe.",
+    "Docker.\n\nDeployment ready.\n\nChanges pending.",
     "zh",
     config,
     undefined,
@@ -122,6 +227,111 @@ test("silent fallback adds no UI notice, but actual partial translations still w
   }
 });
 
+test("a provider failure diagnoses all remaining candidates without retries or leaking the exception", async () => {
+  const h = setup(() => {
+    throw new Error("https://secret.example?key=private");
+  });
+  const plan = createTranslationPlan(
+    Array.from({ length: 20 }, () => "Deployment ready.").join("\n\n"),
+    "zh",
+  );
+  const diagnostics: JudgmentDiagnostic[] = [];
+  const budget = new RequestBudget(1000);
+  try {
+    const decisions = await classifySegments(
+      h.registry,
+      plan.segments,
+      "zh",
+      config,
+      budget,
+      (d) => diagnostics.push(d),
+    );
+    assert.equal(decisions.size, 0);
+    assert.equal(h.classifications.length, 1);
+    assert.deepEqual(diagnostics, [{ reason: "service-error", count: 20 }]);
+  } finally {
+    budget.dispose();
+  }
+});
+
+test("an oversized candidate does not suppress later judgments, and diagnostics cannot affect routing", async () => {
+  const h = setup((ctx) => ({
+    answers: Object.fromEntries(
+      Object.keys(ctx.questions).map((id) => [id, choice("keep")]),
+    ),
+  }));
+  Object.assign(h.registry, {
+    findOfType: () => ({
+      provider: "typesafe",
+      id: "jev-latest",
+      contextWindow: 5000,
+    }),
+  });
+  const plan = createTranslationPlan(
+    `${"背景".repeat(500)} Docker。\n\nDeployment ready.`,
+    "zh",
+  );
+  for (const throwing of [false, true]) {
+    const diagnostics: JudgmentDiagnostic[] = [];
+    const budget = new RequestBudget(1000);
+    try {
+      const decisions = await classifySegments(
+        h.registry,
+        plan.segments,
+        "zh",
+        config,
+        budget,
+        (d) => {
+          diagnostics.push(d);
+          if (throwing) throw new Error("observer failed");
+        },
+      );
+      assert.equal(decisions.size, 1);
+      assert.equal(decisions.get(plan.segments.at(-1)!.id), "keep");
+      assert.deepEqual(
+        diagnostics.map((d) => d.reason),
+        ["capacity", "accepted"],
+      );
+    } finally {
+      budget.dispose();
+    }
+  }
+});
+
+test("context-heavy candidates split into fitting batches instead of losing the whole batch", async () => {
+  const h = setup((ctx) => ({
+    answers: Object.fromEntries(
+      Object.keys(ctx.questions).map((id) => [id, choice("keep")]),
+    ),
+  }));
+  Object.assign(h.registry, {
+    findOfType: () => ({
+      provider: "typesafe",
+      id: "jev-latest",
+      contextWindow: 5000,
+    }),
+  });
+  const text = Array.from(
+    { length: 8 },
+    () => `${"背景".repeat(180)} Docker。`,
+  ).join("\n\n");
+  await translate(h.registry, text, "zh", config);
+  assert.ok(h.classifications.length > 1);
+  assert.equal(
+    h.classifications.reduce((n, c) => n + Object.keys(c.questions).length, 0),
+    8,
+  );
+  assert.ok(
+    h.classifications.every(
+      (c) =>
+        Buffer.byteLength(JSON.stringify(c)) +
+          Object.keys(c.questions).length * 128 <=
+        5000,
+    ),
+  );
+  assert.equal(h.chats.length, 0);
+});
+
 test("all candidates are classified in bounded batches without truncating the tail", async () => {
   const h = setup((ctx) => ({
     answers: Object.fromEntries(
@@ -154,7 +364,7 @@ test("missing model, unsupported Pi and returned provider errors silently use lo
       (h.registry as unknown as { classify: unknown }).classify = undefined;
     const result = await translate(
       h.registry,
-      "Warning: do not retry.",
+      "Deployment ready.",
       "zh",
       config,
     );
@@ -188,7 +398,7 @@ test("classifier cancellation stops rather than falling back; late replies have 
   const warnings: string[] = [];
   const request = translate(
     h.registry,
-    "Warning: do not retry.",
+    "Deployment ready.",
     "zh",
     config,
     controller.signal,
@@ -210,7 +420,7 @@ test("classifier internal timeout falls back within the original operation deadl
     classifierSignal = options?.signal;
     return new Promise(() => {});
   };
-  const result = translate(h.registry, "Warning: do not retry.", "zh", config);
+  const result = translate(h.registry, "Deployment ready.", "zh", config);
   t.mock.timers.tick(8000);
   assert.deepEqual((await result).warnings, []);
   assert.ok(classifierSignal?.aborted);

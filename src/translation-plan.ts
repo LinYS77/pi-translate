@@ -12,6 +12,7 @@ export interface Segment {
   end: number;
   text: string;
   local: "translate" | "keep";
+  judgment: "local" | "jev";
   role: "instruction" | "prose" | "uncertain";
   context: {
     kind: "paragraph" | "quote" | "introduced";
@@ -174,7 +175,15 @@ export function createTranslationPlan(text: string, direction: Direction) {
     if (start >= end) return;
     const value = text.slice(start, end);
     const literals = literalRanges(start, end);
-    if (!protect(value, direction, literals).needsTranslation) return;
+    const protectedValue = protect(value, direction, literals);
+    if (!protectedValue.needsTranslation) return;
+    // Only clear source-language prose is pinned. Short labels and mixed-language
+    // terms still need semantic judgment; protected literals are not evidence.
+    const clearOutput =
+      direction === "zh" &&
+      (!han.test(value) || !han.test(protect(value, "en", literals).prose)) &&
+      (proseWords.test(protectedValue.prose) ||
+        (protectedValue.prose.match(/\b[A-Za-z]+\b/g)?.length ?? 0) >= 3);
     segments.push({
       id: "",
       start,
@@ -183,6 +192,8 @@ export function createTranslationPlan(text: string, direction: Direction) {
       literals,
       group: groupId,
       local: region ? "keep" : localDecision(value, direction, literals),
+      judgment:
+        region || (direction === "zh" && !clearOutput) ? "jev" : "local",
       role: region ? "uncertain" : direction === "en" ? "instruction" : "prose",
       context: {
         kind:
@@ -321,7 +332,7 @@ export function createTranslationPlan(text: string, direction: Direction) {
       const units: Segment[] = [];
       for (const s of segments) {
         const decision =
-          s.role === "instruction" ? s.local : (decisions.get(s.id) ?? s.local);
+          s.judgment === "local" ? s.local : (decisions.get(s.id) ?? s.local);
         if (decision !== "translate") continue;
         const previous = units.at(-1);
         if (
