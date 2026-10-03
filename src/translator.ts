@@ -145,9 +145,13 @@ export async function translate(
                   },
                 )
                 .result(),
-            inputSize + maxTokens,
+            {
+              inputTokens: inputSize,
+              maxOutputTokens: maxTokens,
+              outputTokens: (response) =>
+                Buffer.byteLength(JSON.stringify(response.content)),
+            },
           );
-          budget.record(response.usage);
           const complete = completeText(response);
           try {
             const translated = protectedText.restore(complete).trim();

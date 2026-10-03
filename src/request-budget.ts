@@ -1,6 +1,13 @@
 import type { Usage } from "@earendil-works/pi-ai";
 
-/** One operation owns all deadlines, in-flight requests and conservative token reservations. */
+interface RequestEstimate<T> {
+  inputTokens: number;
+  maxOutputTokens: number;
+  outputTokens(result: T): number;
+  timeoutMs?: number;
+}
+
+/** One operation owns deadlines and usage: reserve in flight, then settle completed calls. */
 export class RequestBudget {
   private readonly controller = new AbortController();
   private readonly timer: ReturnType<typeof setTimeout>;
@@ -28,7 +35,7 @@ export class RequestBudget {
     );
   }
 
-  record(usage?: Usage) {
+  private record(usage?: Usage) {
     if (!usage) return;
     if (!this.usage) {
       this.usage = { ...usage, cost: { ...usage.cost } };
@@ -56,12 +63,12 @@ export class RequestBudget {
       this.usage.cost[key] += usage.cost[key];
   }
 
-  async request<T>(
+  async request<T extends { usage?: Usage }>(
     operation: (signal: AbortSignal) => Promise<T>,
-    tokenReservation: number,
-    timeoutMs?: number,
+    estimate: RequestEstimate<T>,
   ): Promise<T> {
     this.signal.throwIfAborted();
+    const tokenReservation = estimate.inputTokens + estimate.maxOutputTokens;
     if (this.calls >= 64 || this.reserved + tokenReservation > this.tokens)
       throw new Error("翻译请求预算已用尽，剩余内容未处理");
     this.calls++;
@@ -70,9 +77,12 @@ export class RequestBudget {
     const abort = () => child.abort(this.signal.reason);
     this.signal.addEventListener("abort", abort, { once: true });
     const timer =
-      timeoutMs === undefined
+      estimate.timeoutMs === undefined
         ? undefined
-        : setTimeout(() => child.abort(new Error("Jev 判断超时")), timeoutMs);
+        : setTimeout(
+            () => child.abort(new Error("Jev 判断超时")),
+            estimate.timeoutMs,
+          );
     let listener = () => {};
     try {
       const cancelled = new Promise<never>((_, reject) => {
@@ -81,6 +91,17 @@ export class RequestBudget {
       });
       const result = await Promise.race([operation(child.signal), cancelled]);
       child.signal.throwIfAborted();
+      const reported = result.usage?.totalTokens;
+      const consumed =
+        typeof reported === "number" &&
+        Number.isFinite(reported) &&
+        reported > 0
+          ? reported
+          : estimate.inputTokens + estimate.outputTokens(result);
+      // Missing/zero usage is not free. Estimate completed input + output, not the
+      // unused maxTokens allowance. Failed or unresponsive requests keep their reservation.
+      this.reserved += Math.max(0, consumed) - tokenReservation;
+      this.record(result.usage);
       return result;
     } finally {
       if (timer) clearTimeout(timer);

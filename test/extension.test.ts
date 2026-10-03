@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { assistant, deferred, harness, model } from "./helpers.ts";
-import { FAILURE, INPUT, OUTPUT } from "../src/extension.ts";
+import { FAILURE, INPUT, OUTPUT, NOTICE } from "../src/extension.ts";
 import type { Translation } from "../src/translator.ts";
 
 const outputs = (h: Awaited<ReturnType<typeof harness>>) =>
@@ -154,7 +154,12 @@ test("input failure blocks execution, preserves draft/attachments and is explici
     const failure = h.entries.find((e) => e.customType === FAILURE)!;
     assert.equal(failure.data.original, "不能丢失");
     assert.deepEqual(failure.data.images, images);
-    assert.match(h.notifications[0], /未提交/);
+    assert.match(failure.data.error, /network failure/);
+    assert.equal(
+      h.notifications.length,
+      0,
+      "the failure entry is the visible error",
+    );
     await h.restoreInput();
     assert.equal(h.editor, "new draft");
     h.editor = "";
@@ -162,6 +167,45 @@ test("input failure blocks execution, preserves draft/attachments and is explici
     assert.equal(h.editor, "不能丢失");
   } finally {
     await h.close();
+  }
+});
+
+test("classifier fallback and input failure each use one visible channel, including persistence fallback", async () => {
+  for (const storageFails of [false, true]) {
+    const warning =
+      "Jev 判断未完成或不确定，已回退本地规则：低置信度或无效答案";
+    const h = await harness(
+      async (_r, _text, _direction, _config, _signal, warn) => {
+        warn?.(warning);
+        warn?.(warning);
+        throw new Error("测试错误");
+      },
+    );
+    const append = h.pi.appendEntry;
+    h.pi.appendEntry = (type, data) => {
+      if (storageFails && (type === NOTICE || type === FAILURE))
+        throw new Error("storage unavailable");
+      append(type, data);
+    };
+    try {
+      assert.deepEqual(await h.input("请检查原因。"), { action: "handled" });
+      for (const type of [NOTICE, FAILURE])
+        assert.equal(
+          h.entries.filter((e) => e.customType === type).length,
+          storageFails ? 0 : 1,
+        );
+      assert.equal(h.notifications.length, storageFails ? 2 : 0);
+      if (storageFails) {
+        assert.equal(
+          h.notifications.filter((m) => m.includes("回退本地")).length,
+          1,
+        );
+        assert.match(h.notifications[1], /未提交/);
+      }
+      assert.equal(h.editor, "请检查原因。");
+    } finally {
+      await h.close();
+    }
   }
 });
 

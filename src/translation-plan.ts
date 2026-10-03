@@ -97,6 +97,50 @@ function localDecision(
     : "keep";
 }
 
+// A narrow, explicit INPUT-only delimiter convention, not instructions executed by a model.
+// Unquoted prose and directives inside code/quoted examples remain ordinary translation data.
+const keepFollowing =
+  /^[ \t]{0,3}(?:(?:下面|以下)(?:这段|的?内容|的?文本|这部分)(?:请)?不要翻译|(?:请)?不要翻译(?:下面|以下)(?:这段|的?内容|的?文本|这部分)?|do not translate the following(?: (?:text|passage|block))?)[ \t]*[:：]/i;
+const quotePairs: Record<string, string> = {
+  "“": "”",
+  "「": "」",
+  "『": "』",
+  '"': '"',
+};
+
+/** Find an explicit quote's matching end without counting delimiters inside code. */
+function quoteEnd(text: string, start: number): number | undefined {
+  const open = text[start];
+  const close = quotePairs[open];
+  if (!close) return;
+  let depth = 1;
+  for (let i = start + 1; i < text.length; i++) {
+    const char = text[i];
+    if (char === "\\") {
+      i++;
+      continue;
+    }
+    if (char === "`" || (char === "~" && text.slice(i).startsWith("~~~"))) {
+      let length = 1;
+      while (text[i + length] === char) length++;
+      const fenced =
+        length >= 3 &&
+        /^[ \t]*$/.test(text.slice(text.lastIndexOf("\n", i - 1) + 1, i));
+      const closing = fenced
+        ? new RegExp(`^[ \\t]*${char}{${length},}[ \\t]*\\r?$`, "gm")
+        : new RegExp(`(?<!${char})${char}{${length}}(?!${char})`, "g");
+      closing.lastIndex = i + length;
+      const match = closing.exec(text);
+      if (!match) return;
+      i = match.index + match[0].length - 1;
+      continue;
+    }
+    if (char === close) {
+      if (--depth === 0) return i + 1;
+    } else if (char === open) depth++;
+  }
+}
+
 /** UTF-16 source ranges; immutable syntax and whitespace are copied, never reserialized. */
 export function createTranslationPlan(text: string, direction: Direction) {
   const segments: Segment[] = [];
@@ -149,10 +193,18 @@ export function createTranslationPlan(text: string, direction: Direction) {
     pending = undefined;
   };
   let fence: { char: string; length: number } | undefined;
+  let keepUntil = 0;
+  let quotedDataUntil = 0;
   for (const line of text.matchAll(/[^\n]*(?:\n|$)/g)) {
     if (!line[0]) continue;
-    const start = line.index!;
-    const raw = line[0].replace(/\r?\n$/, "");
+    let start = line.index!;
+    let raw = line[0].replace(/\r?\n$/, "");
+    const lineEnd = start + raw.length;
+    if (start < keepUntil) {
+      start = keepUntil;
+      if (start >= lineEnd) continue;
+      raw = text.slice(start, lineEnd);
+    }
     const container = raw.replace(/^\s*(?:>\s*)+/, "");
     const marker = container.match(/^\s*(?:[-*+]\s+)?(`{3,}|~{3,})(.*)$/);
     if (fence) {
@@ -169,6 +221,30 @@ export function createTranslationPlan(text: string, direction: Direction) {
       flush();
       fence = { char: marker[1][0], length: marker[1].length };
       continue;
+    }
+    if (direction === "en" && start >= quotedDataUntil) {
+      const directive = raw.match(keepFollowing);
+      if (directive) {
+        const after = start + directive[0].length;
+        const following = text.slice(after).search(/\S/u);
+        const quoteStart = after + following;
+        if (following >= 0 && quotePairs[text[quoteStart]]) {
+          const end = quoteEnd(text, quoteStart);
+          if (end === undefined)
+            throw new Error(
+              "不翻译的引用块未闭合；请补齐引号或使用代码围栏，原文未提交",
+            );
+          flush();
+          paragraph(start, after); // Translate the instruction, never the delimited material.
+          keepUntil = end;
+          if (end >= lineEnd) continue;
+          start = end;
+          raw = text.slice(start, lineEnd);
+        }
+      }
+      const quoteStart = start + raw.length - raw.trimStart().length;
+      if (quotePairs[text[quoteStart]])
+        quotedDataUntil = quoteEnd(text, quoteStart) ?? text.length;
     }
     if (
       !raw.trim() ||

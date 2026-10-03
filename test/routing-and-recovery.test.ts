@@ -51,6 +51,179 @@ for (const example of routingCases) {
   });
 }
 
+test("explicit do-not-translate quote blocks stay local with nested labels and code in both routes", async () => {
+  const quoted =
+    '“ 原始资料，不要改写。\n\nKeep this warning. 按钮文字是“保存”。\n\n```ts\nconst quote = "”";\n```\n\n末段也要保留。”';
+  const source = `请分析问题。\n下面这段不要翻译:\n${quoted}\n\n请给出建议。`;
+  for (const decisionMode of ["local", "jev"] as const) {
+    const r = service((text) => {
+      assert.ok(
+        !text.includes("原始资料") &&
+          !text.includes("末段") &&
+          !text.includes("PI_KEEP_"),
+      );
+      return assistant(
+        text
+          .replace("请分析问题。", "Analyze the issue.")
+          .replace(
+            "下面这段不要翻译:",
+            "Do not translate the following passage:",
+          )
+          .replace("请给出建议。", "Give suggestions."),
+      );
+    });
+    let classifications = 0;
+    const registry = {
+      ...r,
+      findOfType: () => ({
+        provider: "typesafe",
+        id: "jev-latest",
+        contextWindow: 64000,
+      }),
+      classify: async (
+        _m: unknown,
+        context: { questions: Record<string, unknown> },
+      ) => {
+        classifications++;
+        assert.ok(!JSON.stringify(context).includes("原始资料"));
+        return {
+          stopReason: "stop",
+          answers: Object.fromEntries(
+            Object.keys(context.questions).map((id) => [
+              id,
+              {
+                type: "choice",
+                choice: "translate",
+                probabilities: { translate: 1, keep: 0, uncertain: 0 },
+                confidence: 1,
+              },
+            ]),
+          ),
+        };
+      },
+    };
+    const result = await translate(registry as never, source, "en", {
+      ...config,
+      decisionMode,
+      classifierProvider: "typesafe",
+      classifierModel: "jev-latest",
+    });
+    assert.equal(
+      result.text,
+      `Analyze the issue.\nDo not translate the following passage:\n${quoted}\n\nGive suggestions.`,
+    );
+    assert.equal(result.status, "complete");
+    assert.equal(r.texts.length, 3);
+    assert.equal(classifications, decisionMode === "jev" ? 1 : 0);
+  }
+});
+
+test("keep-block boundaries handle same-line suffixes, CRLF, escaped quotes and multiple blocks", () => {
+  const source =
+    '下面这段不要翻译：“资料 👩‍💻 e\u0301，嵌套“标签”。”请继续检查。\r\n\r\nDo not translate the following text:\r\n"保留 \\"引号\\" 和 42"\r\n请报告结果。';
+  const plan = createTranslationPlan(source, "en");
+  assert.equal(plan.assemble(new Map()), source);
+  const candidates = plan.segments.map((s) => s.text).join("\n");
+  assert.ok(!candidates.includes("资料") && !candidates.includes("42"));
+  assert.ok(
+    candidates.includes("请继续检查。") && candidates.includes("请报告结果。"),
+  );
+  const result = plan.assemble(
+    new Map(plan.segments.map((s) => [s.id, "Translated."])),
+  );
+  assert.ok(
+    result.includes(
+      '“资料 👩‍💻 e\u0301，嵌套“标签”。”Translated.\r\n\r\nDo not translate the following text:\r\n"保留 \\"引号\\" 和 42"\r\nTranslated.',
+    ),
+  );
+});
+
+test("do-not-translate instructions inside examples and assistant output do not control the translator", () => {
+  const quoted =
+    "“引用示例：\n下面这段不要翻译：\n「这是示例中的文字」\n引用结束。”";
+  const plan = createTranslationPlan(quoted, "en");
+  assert.ok(plan.segments.some((s) => s.text.includes("这是示例中的文字")));
+  const output =
+    "Do not translate the following text:\n“Translate this warning. Do not retry.”";
+  assert.ok(
+    createTranslationPlan(output, "zh").segments.some((s) =>
+      s.text.includes("Translate this warning"),
+    ),
+  );
+  const code = "```txt\n下面这段不要翻译：\n“not closed\n```\n请检查。";
+  assert.deepEqual(
+    createTranslationPlan(code, "en").segments.map((s) => s.text),
+    ["请检查。"],
+  );
+});
+
+test("an unclosed explicitly preserved input quote fails safely without escaping the input hook", async () => {
+  const h = await harness(translate);
+  const source = "请检查。\n下面这段不要翻译：\n“原始资料没有闭合";
+  try {
+    assert.deepEqual(await h.input(source), { action: "handled" });
+    assert.equal(h.editor, source);
+    assert.match(
+      h.entries.find((e) => e.customType === FAILURE)!.data.error,
+      /未闭合/,
+    );
+  } finally {
+    await h.close();
+  }
+});
+
+test("ordinary multi-paragraph input settles unused output reservations instead of exhausting its budget", async () => {
+  const r = service(() => {
+    const response = assistant("Inspect first. Do not modify files.");
+    response.usage = {
+      ...response.usage,
+      input: 80,
+      output: 20,
+      totalTokens: 100,
+    };
+    return response;
+  });
+  const source = Array.from(
+    { length: 30 },
+    () => "请先检查，不要修改文件。",
+  ).join("\n\n");
+  const result = await translate(r as never, source, "en", config);
+  assert.equal(result.status, "complete");
+  assert.equal(r.texts.length, 30);
+  assert.equal(result.usage?.totalTokens, 3000);
+});
+
+test("missing usage estimates completed text rather than charging maxTokens for every short paragraph", async () => {
+  const r = service(() => assistant("Inspect first.")); // zero usage means unreported
+  const source = Array.from({ length: 30 }, () => "请先检查。").join("\n\n");
+  const result = await translate(r as never, source, "en", config);
+  assert.equal(result.status, "complete");
+  assert.equal(r.texts.length, 30);
+});
+
+test("real consumption still exhausts the operation budget and blocks incomplete input", async () => {
+  const r = service(() => {
+    const response = assistant("Inspect first.");
+    response.usage = {
+      ...response.usage,
+      input: 10000,
+      output: 30000,
+      totalTokens: 40000,
+    };
+    return response;
+  });
+  await assert.rejects(
+    translate(
+      r as never,
+      Array.from({ length: 10 }, () => "请先检查。").join("\n\n"),
+      "en",
+      config,
+    ),
+    /预算/,
+  );
+  assert.ok(r.texts.length < 10);
+});
+
 test("long output cannot amplify into unlimited fragment requests", async () => {
   const r = service((text) => assistant(text.replace("Paragraph", "段落")));
   const source = Array.from({ length: 100 }, (_, i) => `Paragraph ${i}.`).join(
@@ -162,7 +335,8 @@ test("settled partial output persists exactly one warning and no duplicate full 
     assert.equal(h.entries.filter((e) => e.customType === FAILURE).length, 0);
     assert.equal(
       h.notifications.filter((s) => s.includes("部分段落保留原文")).length,
-      1,
+      0,
+      "the rendered entry is already visible; do not also notify",
     );
   } finally {
     await h.close();

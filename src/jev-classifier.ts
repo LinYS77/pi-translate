@@ -125,10 +125,14 @@ export async function classifySegments(
     try {
       const result = await budget.request(
         (signal) => registry.classify!(model, context, { signal }),
-        reservation,
-        8000,
+        {
+          inputTokens: reservation - batch.length * 128,
+          maxOutputTokens: batch.length * 128,
+          outputTokens: (result) =>
+            Buffer.byteLength(JSON.stringify(result.answers ?? {})),
+          timeoutMs: 8000,
+        },
       );
-      budget.record(result.usage);
       if (result.stopReason !== "stop") {
         fallback(`服务返回 ${result.stopReason}`);
         return decisions;

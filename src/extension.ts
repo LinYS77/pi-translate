@@ -126,6 +126,7 @@ export function registerTranslation(
     let storageError = "";
     try {
       pi.appendEntry(FAILURE, failure);
+      return; // Its entry renderer already reports this error visibly.
     } catch {
       storageError = "（会话记录写入失败；请保留输入框中的原文）";
     }
@@ -151,6 +152,7 @@ export function registerTranslation(
       seen.add(message);
       try {
         pi.appendEntry(NOTICE, { direction, message } satisfies NoticeData);
+        return; // Use exactly one visible channel; notify only if persistence fails.
       } catch {
         /* UI can still report without persistence. */
       }
@@ -401,15 +403,17 @@ export function registerTranslation(
       };
       return { action: "continue" };
     }
-    if (!createTranslationPlan(event.text, "en").segments.length) {
-      prepared = { text: event.text, config: snapshot };
-      return { action: "continue" };
-    }
     const job = new AbortController();
     inputJob = job;
     const warn = warningReporter(ctx, "input", ownEpoch, job.signal);
     status(ctx);
     try {
+      // Planning can reject ambiguous preservation boundaries. Keep it inside the
+      // fail-closed hook: Pi may otherwise pass untranslated input through on error.
+      if (!createTranslationPlan(event.text, "en").segments.length) {
+        prepared = { text: event.text, config: snapshot };
+        return { action: "continue" };
+      }
       // Preserve the original before awaiting anything, even if the session is replaced
       // or the process closes while the translator is pending. This entry is not rendered.
       lastInput = { original: event.text, images: event.images };
