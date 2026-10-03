@@ -170,10 +170,9 @@ test("input failure blocks execution, preserves draft/attachments and is explici
   }
 });
 
-test("classifier fallback and input failure each use one visible channel, including persistence fallback", async () => {
+test("translation diagnostics and input failure each use one visible channel, including persistence fallback", async () => {
   for (const storageFails of [false, true]) {
-    const warning =
-      "Jev 判断未完成或不确定，已回退本地规则：低置信度或无效答案";
+    const warning = "测试翻译诊断";
     const h = await harness(
       async (_r, _text, _direction, _config, _signal, warn) => {
         warn?.(warning);
@@ -197,7 +196,7 @@ test("classifier fallback and input failure each use one visible channel, includ
       assert.equal(h.notifications.length, storageFails ? 2 : 0);
       if (storageFails) {
         assert.equal(
-          h.notifications.filter((m) => m.includes("回退本地")).length,
+          h.notifications.filter((m) => m.includes(warning)).length,
           1,
         );
         assert.match(h.notifications[1], /未提交/);

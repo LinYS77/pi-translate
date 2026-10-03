@@ -1,5 +1,7 @@
 import type { Usage } from "@earendil-works/pi-ai";
 
+const MAX_REQUESTS = 2048;
+
 interface RequestEstimate<T> {
   inputTokens: number;
   maxOutputTokens: number;
@@ -21,7 +23,7 @@ export class RequestBudget {
   constructor(
     timeoutMs: number,
     private readonly parent?: AbortSignal,
-    private readonly tokens = 131072,
+    private readonly tokens = 4_194_304,
   ) {
     this.deadlineError = new Error(`翻译超时（${timeoutMs}ms）`);
     this.signal = this.controller.signal;
@@ -69,8 +71,14 @@ export class RequestBudget {
   ): Promise<T> {
     this.signal.throwIfAborted();
     const tokenReservation = estimate.inputTokens + estimate.maxOutputTokens;
-    if (this.calls >= 64 || this.reserved + tokenReservation > this.tokens)
-      throw new Error("翻译请求预算已用尽，剩余内容未处理");
+    if (this.calls >= MAX_REQUESTS)
+      throw new Error(
+        `翻译请求预算已用尽（请求次数上限：${MAX_REQUESTS}），剩余内容未处理`,
+      );
+    if (this.reserved + tokenReservation > this.tokens)
+      throw new Error(
+        `翻译请求预算已用尽（累计 token 预算上限：${this.tokens}），剩余内容未处理`,
+      );
     this.calls++;
     this.reserved += tokenReservation;
     const child = new AbortController();

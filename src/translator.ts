@@ -82,21 +82,16 @@ export async function translate(
             direction,
             config,
             budget,
-            (message) => {
-              if (!warnings.length) warn(message);
-            },
           )
         : new Map<string, "translate" | "keep">();
     const execution = plan.select(decisions);
     const selected = execution.segments;
     if (!selected.length)
-      return warnings.length
-        ? { text, changed: false, warnings, usage: budget.usage }
-        : {
-            text,
-            changed: false,
-            ...(budget.usage ? { usage: budget.usage } : {}),
-          };
+      return {
+        text,
+        changed: false,
+        ...(budget.usage ? { usage: budget.usage } : {}),
+      };
     if (!config.provider || !config.model)
       throw new Error("未配置翻译模型：用 /translate 打开设置菜单选择模型");
     const model = registry.find(config.provider, config.model);

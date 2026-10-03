@@ -8,7 +8,15 @@ import type {
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { translate } from "../src/translator.ts";
 import { defaults } from "../src/config.ts";
-import { assistant, deferred, flushUI, model, userText } from "./helpers.ts";
+import { NOTICE, OUTPUT } from "../src/extension.ts";
+import {
+  assistant,
+  deferred,
+  flushUI,
+  harness,
+  model,
+  userText,
+} from "./helpers.ts";
 
 const config = {
   ...defaults,
@@ -57,7 +65,7 @@ const choice = (value: string, probability = 0.99) => ({
   },
 });
 
-test("invalid, missing or uncertain answers visibly fall back once without losing valid decisions", async () => {
+test("invalid, missing or uncertain answers silently fall back without losing valid decisions", async () => {
   const h = setup((ctx) => {
     const ids = Object.keys(ctx.questions);
     return {
@@ -80,8 +88,38 @@ test("invalid, missing or uncertain answers visibly fall back once without losin
   assert.equal(h.classifications.length, 1);
   assert.equal(h.chats.length, 2);
   assert.ok(result.text.startsWith("Docker."));
-  assert.equal(warnings.length, 1);
-  assert.match(warnings[0], /回退本地/);
+  assert.deepEqual(warnings, []);
+  assert.deepEqual(result.warnings, []);
+});
+
+test("silent fallback adds no UI notice, but actual partial translations still warn", async () => {
+  for (const partial of [false, true]) {
+    const h = await harness(translate, { ...config, enabled: true });
+    const r = setup(() => ({}));
+    r.registry.streamSimple = (_model, ctx) =>
+      ({
+        result: async () =>
+          userText(ctx).startsWith("Warning")
+            ? assistant("警告：不要重试。")
+            : assistant("第二段。", partial ? "length" : "stop"),
+      }) as ReturnType<ModelRegistry["streamSimple"]>;
+    Object.assign(h.ctx.modelRegistry, r.registry);
+    try {
+      await h.start("English input");
+      await h.turn(assistant("Warning: do not retry.\n\nSecond paragraph."));
+      await h.settle();
+      const notices = h.entries.filter((e) => e.customType === NOTICE);
+      assert.equal(notices.length, partial ? 1 : 0);
+      if (partial) assert.match(notices[0].data.message, /部分段落保留原文/);
+      assert.deepEqual(h.notifications, []);
+      assert.equal(
+        h.entries.find((e) => e.customType === OUTPUT)?.data.status,
+        partial ? "partial" : "complete",
+      );
+    } finally {
+      await h.close();
+    }
+  }
 });
 
 test("all candidates are classified in bounded batches without truncating the tail", async () => {
@@ -104,7 +142,7 @@ test("all candidates are classified in bounded batches without truncating the ta
   assert.equal(h.chats.length, 0);
 });
 
-test("missing model, unsupported Pi and returned provider errors visibly use local rules", async () => {
+test("missing model, unsupported Pi and returned provider errors silently use local rules", async () => {
   for (const mode of ["missing", "unsupported", "error", "lookup-error"]) {
     const h = setup(() => ({ stopReason: "error" }));
     if (mode === "missing") h.registry.findOfType = () => undefined;
@@ -120,7 +158,7 @@ test("missing model, unsupported Pi and returned provider errors visibly use loc
       "zh",
       config,
     );
-    assert.match(result.warnings!.join(""), /回退本地/);
+    assert.deepEqual(result.warnings, []);
     assert.equal(h.chats.length, 1);
   }
 });
@@ -174,7 +212,7 @@ test("classifier internal timeout falls back within the original operation deadl
   };
   const result = translate(h.registry, "Warning: do not retry.", "zh", config);
   t.mock.timers.tick(8000);
-  assert.match((await result).warnings!.join(""), /回退本地/);
+  assert.deepEqual((await result).warnings, []);
   assert.ok(classifierSignal?.aborted);
   assert.equal(h.chats.length, 1);
 });
@@ -284,9 +322,7 @@ test("uncertain input roles preserve material on classifier failure but can tran
         ? "She said:\n“This narrative is not finished.”"
         : `She said:\n${quote}`,
     );
-    if (selected === "uncertain" || selected === "invalid")
-      assert.match(result.warnings!.join(""), /按原始材料保留/);
-    else assert.deepEqual(result.warnings, []);
+    assert.deepEqual(result.warnings, []);
     assert.equal(
       sent.some((s) => s.includes("这是一段叙述")),
       selected === "prose",

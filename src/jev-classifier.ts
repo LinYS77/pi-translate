@@ -51,7 +51,6 @@ export async function classifySegments(
   direction: Direction,
   config: Config,
   budget: RequestBudget,
-  warn: (message: string) => void,
 ): Promise<Map<string, "translate" | "keep">> {
   const decisions = new Map<string, "translate" | "keep">();
   // Input task instructions must be translated, not voted away by a classifier.
@@ -65,20 +64,10 @@ export async function classifySegments(
     direction === "en"
       ? ["prose", "material", "uncertain"]
       : ["translate", "keep", "uncertain"];
-  const fallback = (reason: string) =>
-    warn(
-      direction === "en"
-        ? `Jev 内容角色判断不确定，相关片段按原始材料保留：${reason}`
-        : `Jev 判断未完成或不确定，已回退本地规则：${reason}`,
-    );
-  if (!config.classifierProvider || !config.classifierModel) {
-    fallback("未选择判断模型");
-    return decisions;
-  }
-  if (!registry.findOfType || !registry.classify) {
-    fallback("当前 Pi 缺少 classifier 接口，请升级 Pi");
-    return decisions;
-  }
+  // Missing decisions use the same local policy silently: keep uncertain input
+  // material, and apply local language rules to output. Never lower confidence gates.
+  if (!config.classifierProvider || !config.classifierModel) return decisions;
+  if (!registry.findOfType || !registry.classify) return decisions;
   let model: ClassifierModel<ClassifierApi> | undefined;
   try {
     model = registry.findOfType(
@@ -87,13 +76,9 @@ export async function classifySegments(
       config.classifierModel,
     );
   } catch {
-    fallback("判断模型目录不可用，请检查 Pi provider");
     return decisions;
   }
-  if (!model || !isJev(model)) {
-    fallback("找不到可用的 Jev 模型，请在 /translate 重新选择");
-    return decisions;
-  }
+  if (!model || !isJev(model)) return decisions;
   // All questions share one state. Bound both bytes and question count, never silently truncate.
   let index = 0;
   while (index < candidates.length) {
@@ -105,10 +90,7 @@ export async function classifySegments(
       const size = Buffer.byteLength(segment.text);
       if (batch.length && bytes + size > 12000) break;
       index++;
-      if (size > 12000) {
-        fallback("片段超过判断容量");
-        continue;
-      }
+      if (size > 12000) continue;
       batch.push(segment);
       bytes += size;
     }
@@ -162,10 +144,7 @@ export async function classifySegments(
     };
     const reservation =
       Buffer.byteLength(JSON.stringify(context)) + batch.length * 128;
-    if (reservation > (model.contextWindow ?? 16000)) {
-      fallback("批次超过判断模型容量");
-      continue;
-    }
+    if (reservation > (model.contextWindow ?? 16000)) continue;
     try {
       const result = await budget.request(
         (signal) => registry.classify!(model, context, { signal }),
@@ -177,13 +156,8 @@ export async function classifySegments(
           timeoutMs: 8000,
         },
       );
-      if (result.stopReason !== "stop") {
-        fallback(`服务返回 ${result.stopReason}`);
-        return decisions;
-      }
-      const answers = result.answers ?? {};
-      if (Object.keys(answers).some((id) => !batch.some((s) => s.id === id)))
-        fallback("服务返回未知片段");
+      if (result.stopReason !== "stop") return decisions;
+      const answers = result.answers ?? {}; // Unknown IDs never influence decisions.
       for (const segment of batch) {
         const selected = decision(answers[segment.id], choices);
         if (selected)
@@ -193,18 +167,11 @@ export async function classifySegments(
               ? "translate"
               : "keep",
           );
-        else fallback("低置信度或无效答案");
       }
-    } catch (error) {
+    } catch {
       budget.signal.throwIfAborted();
-      // Do not retry an unavailable service once per batch.
-      // Raw provider exceptions may include request URLs or credential details.
-      const reason =
-        error instanceof Error &&
-        /^(?:Jev 判断超时|翻译请求预算已用尽)/.test(error.message)
-          ? error.message
-          : "分类请求失败，请检查 Pi provider";
-      fallback(reason);
+      // Fall back silently, without retrying an unavailable service for every batch.
+      // Cancellation and the shared operation deadline still propagate above.
       return decisions;
     }
   }

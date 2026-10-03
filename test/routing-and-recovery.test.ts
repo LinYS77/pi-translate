@@ -457,25 +457,47 @@ test("real consumption still exhausts the operation budget and blocks incomplete
   await assert.rejects(
     translate(
       r as never,
-      Array.from({ length: 10 }, () => "请先检查。").join("\n\n"),
+      Array.from({ length: 120 }, () => "请先检查。").join("\n\n"),
       "en",
       config,
     ),
-    /预算/,
+    /累计 token 预算上限：4194304/,
   );
-  assert.ok(r.texts.length < 10);
+  assert.ok(r.texts.length > 64 && r.texts.length < 120);
 });
 
-test("long output cannot amplify into unlimited fragment requests", async () => {
+test("long output completes beyond the old request and token ceilings", async () => {
   const r = service((text) => assistant(text.replace("Paragraph", "段落")));
   const source = Array.from({ length: 100 }, (_, i) => `Paragraph ${i}.`).join(
     "\n\n",
   );
   const result = await translate(r as never, source, "zh", config);
-  assert.ok(r.texts.length <= 64);
+  assert.equal(r.texts.length, 100);
+  assert.equal(result.status, "complete");
+  assert.deepEqual(result.warnings, []);
+  assert.ok(result.text.endsWith("段落 99."));
+});
+
+test("the raised request ceiling still preserves unfinished output with an explicit reason", async () => {
+  const r = service((text) => {
+    const response = assistant(text.replace("Paragraph", "段落"));
+    response.usage = {
+      ...response.usage,
+      input: 80,
+      output: 20,
+      totalTokens: 100,
+    };
+    return response;
+  });
+  const source = Array.from({ length: 2064 }, (_, i) => `Paragraph ${i}.`).join(
+    "\n\n",
+  );
+  const result = await translate(r as never, source, "zh", config);
+  assert.equal(r.texts.length, 2048);
   assert.equal(result.status, "partial");
-  assert.match(result.warnings!.join(""), /预算/);
-  assert.ok(result.text.endsWith("Paragraph 99."));
+  assert.equal(result.failedSegmentIds?.length, 16);
+  assert.match(result.warnings!.join(""), /请求次数上限：2048/);
+  assert.ok(result.text.endsWith("Paragraph 2063."));
 });
 
 test("usage sums optional reasoning/cache breakdowns across completed fragment requests", async () => {
