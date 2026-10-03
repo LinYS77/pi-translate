@@ -87,9 +87,8 @@ export async function translate(
             },
           )
         : new Map<string, "translate" | "keep">();
-    const selected = plan.segments.filter(
-      (segment) => (decisions.get(segment.id) ?? segment.local) === "translate",
-    );
+    const execution = plan.select(decisions);
+    const selected = execution.segments;
     if (!selected.length)
       return warnings.length
         ? { text, changed: false, warnings, usage: budget.usage }
@@ -107,7 +106,11 @@ export async function translate(
       parentSignal?.throwIfAborted();
       try {
         budget.signal.throwIfAborted();
-        const protectedText = protect(segment.text, direction);
+        const protectedText = protect(
+          segment.text,
+          direction,
+          segment.literals,
+        );
         const context = {
           systemPrompt: rules(direction),
           messages: [
@@ -171,7 +174,7 @@ export async function translate(
     }
     parentSignal?.throwIfAborted();
     if (!replacements.size) throw new Error(errors[0] ?? "没有可用译文");
-    const translated = plan.assemble(replacements);
+    const translated = execution.assemble(replacements);
     if (failedSegmentIds.length)
       warn(
         `部分段落保留原文（${failedSegmentIds.length} 段）：${[...new Set(errors)].join("；")}`,

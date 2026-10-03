@@ -43,6 +43,7 @@ try {
     "docs/behavior.md",
     "package.json",
     "src/translation-plan.ts",
+    "src/input-roles.ts",
     "src/jev-classifier.ts",
     "src/request-budget.ts",
   ]) {

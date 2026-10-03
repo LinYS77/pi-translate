@@ -2,7 +2,7 @@
 
 # ⇄ pi-translate
 
-**Chinese prompts, English context, Chinese answers for [Pi](https://github.com/earendil-works/pi).**
+**Chinese prompts, English task instructions, Chinese answers for [Pi](https://github.com/earendil-works/pi).**
 
 English · [简体中文](./README.zh-CN.md)
 
@@ -28,7 +28,7 @@ Use one installation source. Remove an existing Git/local install before switchi
 
 ## Features
 
-- **Bidirectional** — Chinese input becomes English after submission; the final answer gets a Chinese translation when the task settles.
+- **Bidirectional** — Chinese task descriptions become English after submission; original task material stays intact. The final answer gets a Chinese translation when the task settles.
 - **Independent models** — one translation model for both directions; optional Jev classification decides which passages need translation. Your main model stays unchanged.
 - **Quiet status** — `Alt+T` toggles translation; `译 on` / `译 off` shows the state. A single spinner appears while translating.
 - **Native output** — translations use Pi's assistant layout, without an extra label. Original answers stay visible.
@@ -49,7 +49,7 @@ This is the extension's only command. There are no subcommands and no changes to
 - Off by default. Intermediate messages, thinking, tools and past answers are never translated. Toggling mid-task affects the next task, not the current answer.
 - Providers need working credentials. Use Pi's `/login` or `models.json`; the extension does not store API keys.
 - Each translation has a **10-minute** total deadline by default, including classification and recovery. Change it in `/translate` (up to 1 hour). Existing explicit values are preserved.
-- Local rules are the default. Jev uses Pi's classifier credentials; unavailable or uncertain judgments visibly fall back to local rules. Jev is not a translator and is less reliable on CJK text.
+- Local rules are the default. Jev helps judge ambiguous input roles and output language; it cannot override known task instructions or preserved material. Uncertain input material stays in its original language. Jev is not a translator and is less reliable on CJK text.
 - Input failures block submission and preserve the original. **Restore input** appears in `/translate` when recovery data exists; it never overwrites a draft or submits automatically.
 - Output failures keep the original answer. If only some passages fail, their source text stays in place with a visible partial-translation warning. Code blocks stay local; inline literals remain protected. Ordinary prose still depends on the model's accuracy.
 - TUI only. Native commands and extension-generated inputs pass through unchanged. Requires Pi 0.99.2+ and Node.js 22.19+.

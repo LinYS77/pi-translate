@@ -179,6 +179,121 @@ test("classifier internal timeout falls back within the original operation deadl
   assert.equal(h.chats.length, 1);
 });
 
+test("Jev gets the role and lead-in for an ambiguous quote, while input instructions cannot be skipped", async () => {
+  const quote = "“这是一段普通叙述，还没有给出结论。”";
+  const h = setup((context) => {
+    const segments = context.state.segments as {
+      id: string;
+      text: string;
+      role: string;
+      leadIn: string;
+      kind: string;
+    }[];
+    assert.equal(
+      segments.length,
+      1,
+      "do not ask Jev to overrule known task instructions",
+    );
+    assert.equal(segments[0].text, quote);
+    assert.equal(segments[0].role, "uncertain");
+    assert.equal(segments[0].kind, "quote");
+    assert.equal(segments[0].leadIn, "她补充说道：");
+    return {
+      answers: {
+        [segments[0].id]: {
+          type: "choice",
+          choice: "material",
+          confidence: 1,
+          probabilities: { prose: 0, material: 1, uncertain: 0 },
+        },
+      },
+    };
+  });
+  h.registry.streamSimple = (_model, ctx) =>
+    ({
+      result: async () =>
+        assistant(
+          userText(ctx)
+            .replace("她补充说道：", "She added:")
+            .replace("请说明你的看法。", "Give your opinion."),
+        ),
+    }) as ReturnType<ModelRegistry["streamSimple"]>;
+  const result = await translate(
+    h.registry,
+    `她补充说道：\n${quote}\n\n请说明你的看法。`,
+    "en",
+    config,
+  );
+  assert.equal(result.text, `She added:\n${quote}\n\nGive your opinion.`);
+  assert.equal(h.classifications.length, 1);
+  assert.deepEqual(result.warnings, []);
+});
+
+test("uncertain input roles preserve material on classifier failure but can translate confirmed narrative", async () => {
+  const quote = "“这是一段叙述，尚未结束。”";
+  for (const selected of [
+    "prose",
+    "material",
+    "uncertain",
+    "invalid",
+  ] as const) {
+    const h = setup((ctx) => ({
+      answers: Object.fromEntries(
+        Object.keys(ctx.questions).map((id) => [
+          id,
+          selected === "invalid"
+            ? choice("translate")
+            : {
+                type: "choice",
+                choice: selected,
+                confidence: 1,
+                probabilities: {
+                  prose: selected === "prose" ? 1 : 0,
+                  material: selected === "material" ? 1 : 0,
+                  uncertain: selected === "uncertain" ? 1 : 0,
+                },
+              },
+        ]),
+      ),
+    }));
+    const sent: string[] = [];
+    h.registry.streamSimple = (_model, ctx) => {
+      const text = userText(ctx);
+      sent.push(text);
+      return {
+        result: async () =>
+          assistant(
+            text
+              .replace("她说：", "She said:")
+              .replace(
+                "这是一段叙述，尚未结束。",
+                "This narrative is not finished.",
+              ),
+          ),
+      } as ReturnType<ModelRegistry["streamSimple"]>;
+    };
+    const result = await translate(
+      h.registry,
+      `她说：\n${quote}`,
+      "en",
+      config,
+    );
+    assert.equal(
+      result.text,
+      selected === "prose"
+        ? "She said:\n“This narrative is not finished.”"
+        : `She said:\n${quote}`,
+    );
+    if (selected === "uncertain" || selected === "invalid")
+      assert.match(result.warnings!.join(""), /按原始材料保留/);
+    else assert.deepEqual(result.warnings, []);
+    assert.equal(
+      sent.some((s) => s.includes("这是一段叙述")),
+      selected === "prose",
+    );
+  }
+});
+
 test("Jev judges ambiguous candidates before local heuristics and sees only current readable text", async () => {
   const h = setup((ctx) => ({
     answers: Object.fromEntries(
