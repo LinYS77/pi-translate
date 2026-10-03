@@ -50,7 +50,7 @@ This is the extension's only command. There are no subcommands and no changes to
 - Providers need working credentials. Use Pi's `/login` or `models.json`; the extension does not store API keys.
 - Each translation has a **10-minute** total deadline by default, including classification and recovery. Change it in `/translate` (up to 1 hour). Existing explicit values are preserved.
 - Local rules are the default. Jev helps judge ambiguous input roles and output language; it cannot override known task instructions or preserved material. Unavailable or uncertain Jev judgments fall back silently; uncertain input material stays in its original language. Jev is not a translator and is less reliable on CJK text.
-- Input failures block submission and preserve the original. **Restore input** appears in `/translate` when recovery data exists; it never overwrites a draft or submits automatically.
+- Input failures block submission and preserve the original. `Ctrl+Alt+T` restores the latest available original input into an empty editor, without submitting. **Restore input** in `/translate` remains a fallback if your terminal or OS intercepts the shortcut; neither entry point overwrites a draft.
 - Output failures keep the original answer. If only some passages fail, their source text stays in place with a visible partial-translation warning. Code blocks stay local; inline literals remain protected. Ordinary prose still depends on the model's accuracy.
 - TUI only. Native commands and extension-generated inputs pass through unchanged. Requires Pi 0.99.2+ and Node.js 22.19+.
 

@@ -2,7 +2,7 @@
 
 ## Settings
 
-`/translate` is the only extension command and accepts no arguments. `Alt+T` is the quick switch. Configuration stays in a single Pi-managed overlay (`ctx.ui.custom`); returning from search or changing a value does not replace the input editor or reopen the panel. It does not integrate with Pi's `/settings`.
+`/translate` is the only extension command and accepts no arguments. `Alt+T` is the quick switch; `Ctrl+Alt+T` restores the latest available original input. Configuration stays in a single Pi-managed overlay (`ctx.ui.custom`); returning from search or changing a value does not replace the input editor or reopen the panel. It does not integrate with Pi's `/settings`.
 
 The menu stays in one overlay, including model search and the custom timeout editor. It shows all available settings when the panel has room; shorter windows scroll around the selected item without resetting selection on resize:
 
@@ -15,7 +15,7 @@ The menu stays in one overlay, including model search and the custom timeout edi
 | Decision route | Local rules (default), or Jev classification. |
 | Classifier model | Visible under Jev; independently choose an authenticated Jev classifier, not a chat model. The selection is kept when switching back to local rules. |
 
-Changes are saved immediately, not on close. A failed save leaves the old value intact and shows an inline error. **Restore input** appears only when extension-owned recovery data is available. It fills an empty editor, closes the panel and never submits.
+Changes are saved immediately, not on close. A failed save leaves the old value intact and shows an inline error. **Restore input** appears only when extension-owned recovery data is available. It fills an empty editor, closes the panel and never submits. `Ctrl+Alt+T` uses the same recovery logic without opening the panel, even when translation is off. Missing recovery data or an occupied editor produces a short notice; even whitespace-only drafts are preserved. The shortcut does not change the translation switch or submit a task. If a terminal or OS intercepts the key, use the menu instead.
 
 The model and default policy are shared across projects using the same agent directory. Choosing a model never changes the main model, scoped models or main-model default. It also never persists a temporary Alt+T switch.
 
@@ -110,7 +110,7 @@ This is not a complete natural-language, programming-language or Markdown parser
 
 ## Recovery and display
 
-- Input requires every selected fragment to finish safely. Failures block the entire submission; they never submit unprocessed input or an incomplete translation. A local literal-repair request may happen once, but the main task is never retried. The original is persisted before the request. An empty editor is restored automatically; a newer draft is not overwritten. Explicit recovery is available inside `/translate`.
+- Input requires every selected fragment to finish safely. Failures block the entire submission; they never submit unprocessed input or an incomplete translation. A local literal-repair request may happen once, but the main task is never retried. The original is persisted before the request. An empty editor is restored automatically; a newer draft is not overwritten. Explicit recovery is available with `Ctrl+Alt+T` or inside `/translate`.
 - Output failures leave the completed task and original answer intact. If some fragments succeed, the result combines them with failed fragments in their original positions, with an explicit partial-translation warning. If none succeed, only a failure is shown, not a duplicate original answer. A deadline may preserve already completed fragments; user cancellation discards the pending display entirely. The main task is not rerun.
 - Jev fallback creates no notification or session notice; confidence thresholds and local preservation rules stay unchanged. Actual partial-output warnings are stored as `pi-translate.notice` custom entries and excluded from model context. Warnings and failures each use one visible channel: the rendered entry, or a notification if the entry could not be saved—not both. Normal translated output still has no extra heading. Old output entries without diagnostic fields continue to render.
 - Image data stays with the original input backup, but Pi has no public API for restoring image attachments to the editor. Reattach images after restoring text.

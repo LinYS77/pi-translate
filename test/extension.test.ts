@@ -319,6 +319,61 @@ test("pure English input is exact passthrough even without a configured translat
   }
 });
 
+test("Ctrl+Alt+T restores the latest original after reload without submitting, toggling or opening settings", async () => {
+  let translations = 0;
+  const h = await harness(async () => {
+    translations++;
+    throw new Error("translation failed");
+  });
+  try {
+    await h.input("请保留这份原始输入");
+    h.editor = "";
+    await h.emit("session_start");
+    await h.toggle(); // Recovery is independent of whether translation is enabled.
+    const shortcut = h.shortcuts.get("ctrl+alt+t");
+    assert.ok(shortcut, "recovery shortcut must be registered");
+    const entries = h.entries.length;
+    const status = h.status;
+    await shortcut.handler(h.ctx);
+    assert.equal(h.editor, "请保留这份原始输入");
+    assert.equal(translations, 1);
+    assert.equal(h.entries.length, entries);
+    assert.equal(h.status, status);
+    assert.equal(h.panes.length, 0);
+    assert.equal(h.calls.length, 0);
+    assert.deepEqual(h.notifications, []);
+  } finally {
+    await h.close();
+  }
+});
+
+test("recovery shortcut reports missing input and protects every existing draft, including whitespace", async () => {
+  const h = await harness();
+  try {
+    const recover = () => h.shortcuts.get("ctrl+alt+t").handler(h.ctx);
+    await recover();
+    assert.deepEqual(h.notifications, ["没有可恢复的输入"]);
+    h.pi.appendEntry(INPUT, { original: "原始输入" });
+    for (const draft of ["新的草稿", " \n"]) {
+      h.editor = draft;
+      await recover();
+      assert.equal(h.editor, draft);
+      assert.match(h.notifications.at(-1)!, /不会覆盖当前草稿/);
+    }
+    h.editor = "";
+    const notices = h.notifications.length;
+    for (const mode of ["rpc", "json", "print"]) {
+      Object.assign(h.ctx, { mode });
+      await recover();
+      assert.equal(h.editor, "");
+      assert.equal(h.notifications.length, notices);
+    }
+    assert.equal(h.calls.length, 0);
+  } finally {
+    await h.close();
+  }
+});
+
 test("pending input is backed up before session replacement and recoverable without resubmitting", async () => {
   const gate = deferred<Translation>();
   const h = await harness(async () => gate.promise);
@@ -361,10 +416,15 @@ test("one backup retains attachments and newest input wins over older failures, 
     await h.settle(); // An output failure must not discard input recovery.
     for (const reload of [false, true]) {
       if (reload) await h.emit("session_start");
-      h.editor = "";
-      await h.restoreInput();
-      assert.equal(h.editor, "带附件的新输入");
-      assert.match(h.notifications.at(-1)!, /重新附加图片/);
+      for (const entryPoint of ["menu", "shortcut"]) {
+        h.editor = "";
+        const notices = h.notifications.length;
+        if (entryPoint === "menu") await h.restoreInput();
+        else await h.shortcuts.get("ctrl+alt+t").handler(h.ctx);
+        assert.equal(h.editor, "带附件的新输入");
+        assert.equal(h.notifications.length, notices + 1);
+        assert.match(h.notifications.at(-1)!, /重新附加图片/);
+      }
     }
   } finally {
     await h.close();

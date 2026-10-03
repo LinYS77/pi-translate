@@ -227,8 +227,7 @@ export function registerTranslation(
   const recoverInput = (ctx: ExtensionContext): string | undefined => {
     const input = recoverableInput(ctx);
     if (!input) return "没有可恢复的输入";
-    if (ctx.ui.getEditorText().trim())
-      return "请先清空输入框，不会覆盖当前草稿";
+    if (ctx.ui.getEditorText()) return "请先清空输入框，不会覆盖当前草稿";
     ctx.ui.setEditorText(input.original);
     if (input.images?.length)
       ctx.ui.notify("文本已恢复；附件数据仍保留，请重新附加图片", "warning");
@@ -322,6 +321,14 @@ export function registerTranslation(
     description: "切换自动双向翻译（当前任务的输出策略不变）",
     handler: async (ctx) => {
       if (ctx.mode === "tui") toggle(ctx);
+    },
+  });
+  pi.registerShortcut("ctrl+alt+t", {
+    description: "恢复原始输入（不覆盖草稿、不自动提交）",
+    handler: async (ctx) => {
+      if (ctx.mode !== "tui") return;
+      const error = recoverInput(ctx);
+      if (error) ctx.ui.notify(error, "warning");
     },
   });
   pi.registerCommand("translate", {

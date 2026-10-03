@@ -209,6 +209,7 @@ export async function harness(
     customOptions,
     statusHistory,
     commands,
+    shortcuts,
     get renderRequests() {
       return renderRequests;
     },

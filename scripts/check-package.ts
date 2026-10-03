@@ -98,7 +98,7 @@ try {
   assert.equal(loaded.extensions.length, 1);
   const extension = loaded.extensions[0];
   assert.deepEqual([...extension.commands.keys()], ["translate"]);
-  assert.deepEqual([...extension.shortcuts.keys()], ["alt+t"]);
+  assert.deepEqual([...extension.shortcuts.keys()], ["alt+t", "ctrl+alt+t"]);
   assert.ok(extension.handlers.has("agent_settled"));
   assert.ok(extension.entryRenderers?.has("pi-translate.output"));
   assert.ok(extension.entryRenderers?.has("pi-translate.notice"));
