@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Translation } from "../src/translator.ts";
-import { deferred, harness } from "./helpers.ts";
+import { deferred, flushUI, harness } from "./helpers.ts";
+import { OUTPUT } from "../src/extension.ts";
 
 const spinner = /^译 on [⠹⠸⠼⠴⠦⠧⠇⠏⠋⠙]$/;
 
@@ -27,7 +28,7 @@ test("input progress is one animated icon and stops when translation completes",
   }
 });
 
-test("output uses the same compact icon, including when toggled off mid-translation", async (t) => {
+test("turning off stops display translation immediately and on cannot revive its late response", async (t) => {
   t.mock.timers.enable({ apis: ["setInterval"] });
   const gate = deferred<Translation>();
   const h = await harness(async (_r, _text, direction) =>
@@ -42,10 +43,17 @@ test("output uses the same compact icon, including when toggled off mid-translat
     t.mock.timers.tick(80);
     assert.match(h.status, spinner);
     await h.toggle();
-    assert.match(h.status, /^译 off [⠹⠸⠼⠴⠦⠧⠇⠏⠋⠙]$/);
+    assert.equal(h.status, "译 off");
+    const stoppedWrites = h.statusHistory.length;
+    t.mock.timers.tick(800);
+    assert.equal(h.statusHistory.length, stoppedWrites);
+    await h.toggle();
+    assert.equal(h.status, "译 on");
     gate.resolve({ text: "完成", changed: true });
     await pending;
-    assert.equal(h.status, "译 off");
+    await flushUI();
+    assert.equal(h.status, "译 on");
+    assert.equal(h.entries.filter((e) => e.customType === OUTPUT).length, 0);
     const writes = h.statusHistory.length;
     t.mock.timers.tick(800);
     assert.equal(h.statusHistory.length, writes);

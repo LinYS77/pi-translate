@@ -46,7 +46,7 @@ This is the extension's only command. There are no subcommands and no changes to
 
 ## Notes
 
-- Off by default. Intermediate messages, thinking, tools and past answers are never translated. Toggling mid-task affects the next task, not the current answer.
+- Off by default. Intermediate messages, thinking, tools and past answers are never translated. `Alt+T` takes effect immediately: off cancels unfinished translations; turning on before the current answer finishes enables its final translation. It never replays past answers.
 - Providers need working credentials. Use Pi's `/login` or `models.json`; the extension does not store API keys.
 - Each translation has a **10-minute** total deadline by default, including classification and recovery. Change it in `/translate` (up to 1 hour). Existing explicit values are preserved.
 - Local rules are the default. Jev helps judge ambiguous input roles and output language; it cannot override known task instructions or preserved material. Unavailable or uncertain Jev judgments fall back silently; uncertain input material stays in its original language. Jev is not a translator and is less reliable on CJK text.

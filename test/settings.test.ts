@@ -25,7 +25,6 @@ test("timeout and routing settings persist without changing an active task snaps
       pane.handleInput("\u001b");
     });
     await h.command();
-    await h.toggle();
     await h.turn();
     await h.settle();
     const output = h.calls.find((c) => c.direction === "zh")!;
@@ -35,7 +34,8 @@ test("timeout and routing settings persist without changing an active task snaps
     assert.equal(saved.timeoutMs, 60000);
     assert.equal(saved.decisionMode, "jev");
     assert.equal(saved.enabled, true);
-    assert.match(h.status, /译 off/);
+    await h.toggle();
+    assert.equal(h.status, "译 off");
   } finally {
     await h.close();
   }

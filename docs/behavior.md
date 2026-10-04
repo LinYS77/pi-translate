@@ -9,7 +9,7 @@ The menu stays in one overlay, including model search and the custom timeout edi
 | Setting | Behavior |
 | --- | --- |
 | Translation model | Search Pi's available chat models by name, provider or ID. Enter saves the selection; Esc returns without selecting. |
-| Current switch | Temporary on/off for future submissions. Same effect as Alt+T. |
+| Current switch | Temporary runtime on/off. Off cancels unfinished translations immediately; on enables the current unfinished answer and future submissions. Same effect as Alt+T. |
 | New-session default | Saved on/off for new sessions, restarts and reloads; does not change the current switch. |
 | Translation timeout | 1, 5, 10, 20, 30 or 60 minutes, or custom seconds (0.1–3600, up to three decimal places). Existing values are displayed without rounding. |
 | Decision route | Local rules (default), or Jev classification. |
@@ -63,11 +63,13 @@ Merge into the existing file rather than replacing other providers. Supply `TRAN
 
 ## Boundaries
 
-Input uses the switch, models, route and timeout snapshot at submission. Output uses the snapshot taken at task start until `agent_settled`. Turning off while a task runs does not remove that task's final translation; turning on does not translate a task that started off.
+The current switch is the only on/off decision. Input checks it at submission; the current answer checks it at `agent_settled`. Turning off cancels unfinished input/output translation immediately. Turning on before the current answer finishes enables its final translation, including when the task started with translation off. Turning on after settlement does not replay an answer or restart a canceled translation. Native commands and extension-generated tasks remain excluded.
 
-Retries, compaction continuations, steering and follow-up queues can all be part of one Pi activity. Each new input uses its submission snapshot, while only the last eligible answer at settlement is translated. A message ending is not a task ending. Aborts, errors, length stops, tool calls, tool results and empty answers do not fall back to previous text.
+Input translation still fixes its model, route and timeout at submission. Output keeps the originating task's model/route/timeout settings; the captured enabled flag does not override the live switch. Changing the saved new-session default does not toggle the current session.
 
-The status is `译 on` / `译 off`, plus one animated braille character while translating. A differing task policy is shown as `本任务 on/off`. The extension disposes animation and its requests on session replacement, tree navigation or shutdown; late results are discarded.
+Retries, compaction continuations, steering and follow-up queues can all be part of one Pi activity. Each new input uses its submission snapshot, while only the last eligible answer at settlement is translated. A message ending is not a task ending. Aborts, errors, length stops, tool calls, tool results and empty answers do not fall back to previous text. A raw Esc key alone does not mark a main task as aborted: Pi may have used it to close a picker. Esc cancels active translation jobs; main-task eligibility follows Pi's outcome and abort signal.
+
+The status is `译 on` / `译 off`, plus one animated braille character while translating. There is no second task-specific on/off indicator. Final-answer translation runs as a background display job; it does not hold Pi's settlement event or delay the next prompt. Starting new input or a new task cancels the older pending display job so its result cannot appear under the new answer. The original answer remains visible. The extension disposes animation and its requests on session replacement, tree navigation or shutdown; late results and cleanup cannot overwrite a newer job.
 
 ## Data isolation and fidelity
 
@@ -110,7 +112,7 @@ This is not a complete natural-language, programming-language or Markdown parser
 
 ## Recovery and display
 
-- Input requires every selected fragment to finish safely. Failures block the entire submission; they never submit unprocessed input or an incomplete translation. A local literal-repair request may happen once, but the main task is never retried. The original is persisted before the request. An empty editor is restored automatically; a newer draft is not overwritten. Explicit recovery is available with `Ctrl+Alt+T` or inside `/translate`.
+- Input requires every selected fragment to finish safely. Failures block the entire submission; they never submit unprocessed input or an incomplete translation. A local literal-repair request may happen once, but the main task is never retried. The original is persisted before the request. An empty editor is restored automatically; a newer draft is not overwritten. Explicit recovery is available with `Ctrl+Alt+T` or inside `/translate`. Canceling input translation with Esc or Alt+T blocks submission and restores the original to an empty editor; a newer draft is preserved. Cancellation produces a short notice rather than a translation-failure entry. Re-enabling translation does not silently resubmit the canceled input.
 - Output failures leave the completed task and original answer intact. If some fragments succeed, the result combines them with failed fragments in their original positions, with an explicit partial-translation warning. If none succeed, only a failure is shown, not a duplicate original answer. A deadline may preserve already completed fragments; user cancellation discards the pending display entirely. The main task is not rerun.
 - Jev fallback creates no notification or session notice; confidence thresholds and local preservation rules stay unchanged. Actual partial-output warnings are stored as `pi-translate.notice` custom entries and excluded from model context. Warnings and failures each use one visible channel: the rendered entry, or a notification if the entry could not be saved—not both. Normal translated output still has no extra heading. Old output entries without diagnostic fields continue to render.
 - Image data stays with the original input backup, but Pi has no public API for restoring image attachments to the editor. Reattach images after restoring text.

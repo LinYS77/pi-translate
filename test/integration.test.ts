@@ -19,9 +19,13 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { registerTranslation, OUTPUT } from "../src/extension.ts";
 import { defaults, saveConfig } from "../src/config.ts";
-import { assistant, model } from "./helpers.ts";
+import { assistant, deferred, flushUI, model } from "./helpers.ts";
+import type { translate } from "../src/translator.ts";
 
-async function integration(extra?: (pi: ExtensionAPI) => void) {
+async function integration(
+  extra?: (pi: ExtensionAPI) => void,
+  translateText?: typeof translate,
+) {
   const dir = await mkdtemp(join(tmpdir(), "pi-translate-integration-"));
   const path = join(dir, "pi-translate.json");
   await saveConfig(path, {
@@ -108,7 +112,7 @@ async function integration(extra?: (pi: ExtensionAPI) => void) {
     noContextFiles: true,
     systemPrompt: "MAIN SYSTEM SECRET: do the task normally.",
     extensionFactories: [
-      (pi) => registerTranslation(pi, path),
+      (pi) => registerTranslation(pi, path, translateText),
       ...(extra ? [extra] : []),
     ],
   });
@@ -126,10 +130,13 @@ async function integration(extra?: (pi: ExtensionAPI) => void) {
     settingsManager,
     sessionManager: manager,
   });
+  let status = "";
   await session.bindExtensions({
     mode: "tui",
     uiContext: {
-      setStatus: () => {},
+      setStatus: (_key: string, value?: string) => {
+        status = value ?? "";
+      },
       notify: () => {},
       onTerminalInput: () => () => {},
       getEditorText: () => "",
@@ -145,6 +152,9 @@ async function integration(extra?: (pi: ExtensionAPI) => void) {
     translationRequests,
     mainResponses,
     errors,
+    get status() {
+      return status;
+    },
     outputs: () =>
       manager
         .getEntries()
@@ -155,6 +165,106 @@ async function integration(extra?: (pi: ExtensionAPI) => void) {
     },
   };
 }
+
+test("real AgentSession: a pending display translation does not hold the session open", async () => {
+  const gate = deferred<{ text: string; changed: boolean }>();
+  const started = deferred<void>();
+  const h = await integration(undefined, async () => {
+    started.resolve();
+    return gate.promise;
+  });
+  let settled = false;
+  const request = h.session.prompt("Inspect the files.").then(() => {
+    settled = true;
+  });
+  try {
+    await started.promise;
+    await flushUI();
+    assert.equal(
+      settled,
+      true,
+      "Pi must finish before the display translation returns",
+    );
+    assert.equal(h.session.isIdle, true);
+    assert.equal(h.outputs().length, 0);
+    gate.resolve({ text: "最终译文", changed: true });
+    await flushUI();
+    assert.equal(h.outputs().length, 1);
+    assert.ok(
+      !JSON.stringify(h.manager.buildSessionContext().messages).includes(
+        "最终译文",
+      ),
+    );
+  } finally {
+    gate.resolve({ text: "最终译文", changed: true });
+    await request;
+    await h.close();
+  }
+});
+
+test("real AgentSession: the next prompt cancels the old translation and late cleanup cannot touch its successor", async () => {
+  const first = deferred<{ text: string; changed: boolean }>();
+  const second = deferred<{ text: string; changed: boolean }>();
+  const signals: AbortSignal[] = [];
+  const h = await integration(
+    undefined,
+    async (_r, text, _direction, _config, signal) => {
+      signals.push(signal!);
+      return text === "First answer." ? first.promise : second.promise;
+    },
+  );
+  try {
+    h.mainResponses.push(
+      assistant("First answer."),
+      assistant("Second answer."),
+    );
+    await h.session.prompt("First task.");
+    assert.equal(signals.length, 1);
+    await h.session.prompt("Second task.");
+    assert.equal(
+      h.mainRequests.length,
+      2,
+      "no wait for the previous translation",
+    );
+    assert.equal(signals.length, 2);
+    assert.ok(signals[0].aborted);
+    assert.ok(!signals[1].aborted);
+    first.resolve({ text: "旧译文", changed: true });
+    await flushUI();
+    assert.equal(h.outputs().length, 0);
+    assert.match(h.status, /^译 on [⠹⠸⠼⠴⠦⠧⠇⠏⠋⠙]$/);
+    second.resolve({ text: "新译文", changed: true });
+    await flushUI();
+    assert.equal(h.outputs().length, 1);
+    assert.equal(h.status, "译 on");
+    assert.ok(
+      !JSON.stringify(h.manager.buildSessionContext().messages).includes(
+        "译文",
+      ),
+    );
+  } finally {
+    first.resolve({ text: "旧译文", changed: true });
+    second.resolve({ text: "新译文", changed: true });
+    await flushUI();
+    await h.close();
+  }
+});
+
+test("real AgentSession: disposal during a background translation cannot use stale UI or append a late answer", async () => {
+  const gate = deferred<{ text: string; changed: boolean }>();
+  const h = await integration(undefined, async () => gate.promise);
+  try {
+    await h.session.prompt("Inspect files.");
+    h.session.dispose();
+    gate.resolve({ text: "迟到的译文", changed: true });
+    await flushUI();
+    assert.equal(h.outputs().length, 0);
+    assert.deepEqual(h.errors, []);
+  } finally {
+    gate.resolve({ text: "迟到的译文", changed: true });
+    await h.close();
+  }
+});
 
 test("real AgentSession: tool progress stays original, final translation is visible data not context", async () => {
   const h = await integration();
@@ -173,6 +283,7 @@ test("real AgentSession: tool progress stays original, final translation is visi
       assistant("Final answer: do not rerun training."),
     );
     await h.session.prompt("请检查配置，不要训练。");
+    await flushUI(); // Display translation completes independently of Pi's prompt.
     assert.equal(h.mainRequests.length, 2);
     assert.equal(h.translationRequests.length, 2);
     assert.equal(h.outputs().length, 1);
@@ -234,6 +345,7 @@ test("real AgentSession: another extension can continue after before_settle; onl
       assistant("Final answer: do not rerun training."),
     );
     await h.session.prompt("请检查配置，不要训练。");
+    await flushUI();
     assert.equal(h.mainRequests.length, 2);
     assert.equal(h.translationRequests.length, 2);
     assert.equal(h.outputs().length, 1);

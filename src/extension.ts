@@ -41,7 +41,6 @@ interface Run {
   config: Config;
   candidate?: { text: string; id: string };
   eligible: boolean;
-  cancelled: boolean;
   signal?: AbortSignal;
 }
 
@@ -58,7 +57,7 @@ export function registerTranslation(
   let prepared: { text: string; config: Config } | undefined;
   let run: Run | undefined;
   let epoch = 0;
-  let inputJob: AbortController | undefined;
+  let inputJob: { controller: AbortController; input: InputData } | undefined;
   let outputJob: AbortController | undefined;
   let unsubscribeKeys: (() => void) | undefined;
   let lastInput: InputData | undefined;
@@ -73,41 +72,38 @@ export function registerTranslation(
   };
 
   const status = (ctx: ExtensionContext) => {
-    if (ctx.mode !== "tui") {
-      stopSpinner();
-      return;
-    }
-    statusContext = ctx;
-    const translating = Boolean(inputJob || outputJob);
-    if (translating && !spinnerTimer) {
-      spinnerFrame = 0;
-      const ownEpoch = epoch;
-      spinnerTimer = setInterval(() => {
-        if (ownEpoch !== epoch || !statusContext) return;
-        spinnerFrame = (spinnerFrame + 1) % spinnerFrames.length;
-        status(statusContext);
-      }, 80);
-      spinnerTimer.unref?.();
-    } else if (!translating) stopSpinner();
-    const busy = translating ? ` ${spinnerFrames[spinnerFrame]}` : "";
-    const locked =
-      run && run.config.enabled !== config.enabled
-        ? ` · 本任务 ${run.config.enabled ? "on" : "off"}`
-        : "";
-    const missing = !config.provider || !config.model ? " · 未选模型" : "";
     try {
+      if (ctx.mode !== "tui") {
+        stopSpinner();
+        return;
+      }
+      statusContext = ctx;
+      const translating = Boolean(inputJob || outputJob);
+      if (translating && !spinnerTimer) {
+        spinnerFrame = 0;
+        const ownEpoch = epoch;
+        spinnerTimer = setInterval(() => {
+          if (ownEpoch !== epoch || !statusContext) return;
+          spinnerFrame = (spinnerFrame + 1) % spinnerFrames.length;
+          status(statusContext);
+        }, 80);
+        spinnerTimer.unref?.();
+      } else if (!translating) stopSpinner();
+      const busy = translating ? ` ${spinnerFrames[spinnerFrame]}` : "";
+      const missing = !config.provider || !config.model ? " · 未选模型" : "";
       ctx.ui.setStatus(
         "pi-translate",
-        `译 ${config.enabled ? "on" : "off"}${busy}${locked}${configError ? " · 配置错误" : missing}`,
+        `译 ${config.enabled ? "on" : "off"}${busy}${configError ? " · 配置错误" : missing}`,
       );
     } catch {
-      /* UI teardown must never make the input hook fail open. */
+      // A disposed SDK session can invalidate even ctx.mode before shutdown fires.
+      stopSpinner();
     }
   };
   const reset = () => {
     epoch++;
     stopSpinner();
-    inputJob?.abort(new Error("会话已改变"));
+    inputJob?.controller.abort(new Error("会话已改变"));
     outputJob?.abort(new Error("会话已改变"));
     inputJob = outputJob = undefined;
     prepared = undefined;
@@ -116,8 +112,38 @@ export function registerTranslation(
     configurationJob?.abort();
     configurationJob = undefined;
   };
+  const cancelOutput = (reason: string) => {
+    const job = outputJob;
+    outputJob = undefined;
+    job?.abort(new Error(reason));
+  };
+  const cancelInput = (ctx: ExtensionContext) => {
+    const pending = inputJob;
+    if (!pending) return;
+    inputJob = undefined;
+    prepared = undefined;
+    pending.controller.abort(new Error("输入翻译已取消"));
+    try {
+      const occupied = Boolean(ctx.ui.getEditorText());
+      if (!occupied) ctx.ui.setEditorText(pending.input.original);
+      ctx.ui.notify(
+        occupied
+          ? "输入翻译已取消，未提交；可用 Ctrl+Alt+T 恢复原文"
+          : pending.input.images?.length
+            ? "输入翻译已取消，未提交；原文已恢复，请重新附加图片"
+            : "输入翻译已取消，未提交；原文已恢复",
+        "info",
+      );
+    } catch {
+      // The original backup remains recoverable when the UI has been disposed.
+    }
+  };
   const toggle = (ctx: ExtensionContext) => {
     config = { ...config, enabled: !config.enabled };
+    if (!config.enabled) {
+      cancelInput(ctx);
+      cancelOutput("翻译已关闭");
+    }
     status(ctx);
   };
   const fail = (ctx: ExtensionContext, failure: FailureData) => {
@@ -318,7 +344,7 @@ export function registerTranslation(
   };
 
   pi.registerShortcut("alt+t", {
-    description: "切换自动双向翻译（当前任务的输出策略不变）",
+    description: "切换自动双向翻译（关闭时取消未完成的翻译）",
     handler: async (ctx) => {
       if (ctx.mode === "tui") toggle(ctx);
     },
@@ -358,9 +384,12 @@ export function registerTranslation(
     if (ownEpoch !== epoch) return;
     unsubscribeKeys = ctx.ui.onTerminalInput((data) => {
       if (!matchesKey(data, "escape") || configurationJob) return;
-      if (run) run.cancelled = true;
-      inputJob?.abort(new Error("输入翻译已取消"));
-      outputJob?.abort(new Error("回答翻译已取消"));
+      // Escape may close another Pi picker. Only cancel work this extension owns;
+      // main-task cancellation is determined by Pi's outcome and abort signal.
+      if (!inputJob && !outputJob) return;
+      cancelInput(ctx);
+      cancelOutput("回答翻译已取消");
+      status(ctx);
       // Keep pi's normal abort handling; we only cancel our own nested calls.
       return undefined;
     });
@@ -383,6 +412,10 @@ export function registerTranslation(
   });
 
   pi.on("input", async (event, ctx) => {
+    if (ctx.mode === "tui") {
+      cancelOutput("新的输入已提交");
+      status(ctx);
+    }
     if (ctx.mode !== "tui" || event.source !== "interactive") {
       prepared = undefined;
       return { action: "continue" };
@@ -404,14 +437,16 @@ export function registerTranslation(
       /^\/(?:skill:)?[\w-]+(?:\s|$)/u.test(event.text) ||
       event.text.startsWith("!");
     if (!snapshot.enabled || nativeEntry) {
-      prepared = {
-        text: event.text,
-        config: nativeEntry ? { ...snapshot, enabled: false } : snapshot,
-      };
+      prepared = nativeEntry
+        ? undefined
+        : { text: event.text, config: snapshot };
       return { action: "continue" };
     }
     const job = new AbortController();
-    inputJob = job;
+    inputJob = {
+      controller: job,
+      input: { original: event.text, images: event.images },
+    };
     const warn = warningReporter(ctx, "input", ownEpoch, job.signal);
     status(ctx);
     try {
@@ -434,7 +469,8 @@ export function registerTranslation(
         job.signal,
         warn,
       );
-      if (ownEpoch !== epoch) return { action: "handled" };
+      if (ownEpoch !== epoch || inputJob?.controller !== job)
+        return { action: "handled" };
       job.signal.throwIfAborted();
       result.warnings?.forEach(warn);
       if (result.status === "partial")
@@ -442,7 +478,7 @@ export function registerTranslation(
       prepared = { text: result.text, config: snapshot };
       return { action: "transform", text: result.text, images: event.images };
     } catch (error) {
-      if (ownEpoch === epoch) {
+      if (ownEpoch === epoch && inputJob?.controller === job) {
         prepared = undefined;
         fail(ctx, {
           direction: "input",
@@ -459,7 +495,7 @@ export function registerTranslation(
       }
       return { action: "handled" };
     } finally {
-      if (ownEpoch === epoch) {
+      if (ownEpoch === epoch && inputJob?.controller === job) {
         inputJob = undefined;
         status(ctx);
       }
@@ -468,14 +504,13 @@ export function registerTranslation(
 
   pi.on("before_agent_start", (event, ctx) => {
     if (ctx.mode !== "tui") return;
+    cancelOutput("新的任务已开始");
     // The input transform and this boundary are pi's native single submission path.
     // An unrelated extension-generated request must never acquire a stale snapshot.
     const snapshot =
-      prepared?.text === event.prompt
-        ? prepared.config
-        : { ...config, enabled: false };
+      prepared?.text === event.prompt ? prepared.config : undefined;
     prepared = undefined;
-    run = { config: { ...snapshot }, eligible: false, cancelled: false };
+    run = snapshot ? { config: { ...snapshot }, eligible: false } : undefined;
     status(ctx);
   });
   pi.on("agent_start", () => {
@@ -521,14 +556,13 @@ export function registerTranslation(
     if (run) run.eligible = event.outcome === "completed";
     // No continuation, context changes, or translation calls at this actionable boundary.
   });
-  pi.on("agent_settled", async (_event, ctx) => {
+  pi.on("agent_settled", (_event, ctx) => {
     const finished = run;
     run = undefined;
     prepared = undefined;
     if (
-      !finished?.config.enabled ||
-      !finished.eligible ||
-      finished.cancelled ||
+      !config.enabled ||
+      !finished?.eligible ||
       finished.signal?.aborted ||
       !finished.candidate
     ) {
@@ -541,44 +575,48 @@ export function registerTranslation(
     outputJob = job;
     const warn = warningReporter(ctx, "output", ownEpoch, job.signal);
     status(ctx);
-    try {
-      const result = await translateText(
-        ctx.modelRegistry,
-        text,
-        "zh",
-        finished.config,
-        job.signal,
-        warn,
-      );
-      if (ownEpoch !== epoch) return;
-      job.signal.throwIfAborted();
-      result.warnings?.forEach(warn);
-      if (result.changed) {
-        pi.appendEntry(OUTPUT, {
-          original: text,
-          translated: result.text,
-          messageEntryId: id,
-          provider: finished.config.provider,
-          model: finished.config.model,
-          usage: result.usage,
-          status: result.status,
-          warnings: result.warnings,
-          failedSegmentIds: result.failedSegmentIds,
-        });
+    // Pi awaits settlement handlers and defers new prompts until they return.
+    // Display-only work must outlive this notification without holding Pi open.
+    void (async () => {
+      try {
+        const result = await translateText(
+          ctx.modelRegistry,
+          text,
+          "zh",
+          { ...finished.config, enabled: true },
+          job.signal,
+          warn,
+        );
+        if (ownEpoch !== epoch || outputJob !== job) return;
+        job.signal.throwIfAborted();
+        result.warnings?.forEach(warn);
+        if (result.changed) {
+          pi.appendEntry(OUTPUT, {
+            original: text,
+            translated: result.text,
+            messageEntryId: id,
+            provider: finished.config.provider,
+            model: finished.config.model,
+            usage: result.usage,
+            status: result.status,
+            warnings: result.warnings,
+            failedSegmentIds: result.failedSegmentIds,
+          });
+        }
+      } catch (error) {
+        if (ownEpoch === epoch && outputJob === job && !job.signal.aborted)
+          fail(ctx, {
+            direction: "output",
+            original: text,
+            messageEntryId: id,
+            error: error instanceof Error ? error.message : String(error),
+          });
+      } finally {
+        if (ownEpoch === epoch && outputJob === job) {
+          outputJob = undefined;
+          status(ctx);
+        }
       }
-    } catch (error) {
-      if (ownEpoch === epoch && !job.signal.aborted)
-        fail(ctx, {
-          direction: "output",
-          original: text,
-          messageEntryId: id,
-          error: error instanceof Error ? error.message : String(error),
-        });
-    } finally {
-      if (ownEpoch === epoch) {
-        outputJob = undefined;
-        status(ctx);
-      }
-    }
+    })();
   });
 }

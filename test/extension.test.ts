@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { assistant, deferred, harness, model } from "./helpers.ts";
+import { assistant, deferred, flushUI, harness, model } from "./helpers.ts";
 import { FAILURE, INPUT, OUTPUT, NOTICE } from "../src/extension.ts";
 import type { Translation } from "../src/translator.ts";
 
@@ -62,12 +62,12 @@ test("single input transform and only settled final body is translated", async (
   }
 });
 
-test("run snapshot survives toggles, queued prompts, retries and further boundaries", async () => {
+test("the current switch controls the final answer across queued prompts and retries", async () => {
   const h = await harness();
   try {
     await h.start();
     await h.toggle();
-    assert.match(h.status, /本任务 on/);
+    assert.equal(h.status, "译 off");
     assert.deepEqual(
       await h.input("不要训练", { streamingBehavior: "steer" }),
       { action: "continue" },
@@ -78,13 +78,14 @@ test("run snapshot survives toggles, queued prompts, retries and further boundar
     await h.emit("turn_start");
     await h.turn(assistant("Actual final"), "actual");
     await h.settle();
-    assert.equal(outputs(h).length, 1);
-    assert.equal(outputs(h)[0].data.original, "Actual final");
+    assert.equal(outputs(h).length, 0);
     await h.start("下一轮");
     await h.toggle();
-    await h.turn(assistant("Untranslated run"));
+    assert.equal(h.status, "译 on");
+    await h.turn(assistant("Translate this final answer"));
     await h.settle();
     assert.equal(outputs(h).length, 1);
+    assert.equal(outputs(h)[0].data.original, "Translate this final answer");
   } finally {
     await h.close();
   }
@@ -110,6 +111,20 @@ for (const reason of [
     }
   });
 }
+test("Escape consumed by another UI does not suppress an otherwise completed answer", async () => {
+  const h = await harness();
+  try {
+    await h.start("Inspect the files.");
+    h.key("\u001b"); // Raw input does not tell us whether Pi closed a picker or aborted a run.
+    await h.turn();
+    await h.settle("completed");
+    assert.equal(outputs(h).length, 1);
+    assert.equal(h.notifications.length, 0);
+  } finally {
+    await h.close();
+  }
+});
+
 test("abort/error settlement, Escape, no answer, and stale prior answers are excluded", async () => {
   const h = await harness();
   try {
@@ -121,7 +136,7 @@ test("abort/error settlement, Escape, no answer, and stale prior answers are exc
     await h.start();
     await h.turn();
     h.key("\u001b");
-    await h.settle();
+    await h.settle("aborted");
     await h.start();
     await h.settle();
     await h.start();
@@ -229,14 +244,13 @@ test("output failure leaves the completed task and original answer intact", asyn
   }
 });
 
-test("pending input snapshots toggle and duplicate Enter cannot overtake it", async () => {
+test("pending input prevents duplicate Enter from overtaking the original submission", async () => {
   const gate = deferred<Translation>();
   const h = await harness(async (_r, _text, direction) =>
     direction === "en" ? gate.promise : { text: "最终译文", changed: true },
   );
   try {
     const pending = h.input("第一份");
-    await h.toggle();
     assert.deepEqual(await h.input("第二份"), { action: "handled" });
     gate.resolve({ text: "First", changed: true });
     assert.equal((await pending).action, "transform");
@@ -245,6 +259,103 @@ test("pending input snapshots toggle and duplicate Enter cannot overtake it", as
     await h.turn();
     await h.settle();
     assert.equal(outputs(h).length, 1);
+  } finally {
+    await h.close();
+  }
+});
+
+test("off cancels pending input, restores it without submission, and permits a new prompt", async () => {
+  const gate = deferred<Translation>();
+  let oldSignal: AbortSignal | undefined;
+  const h = await harness(async (_r, _text, _direction, _config, signal) => {
+    oldSignal = signal;
+    return gate.promise; // Deliberately ignores cancellation.
+  });
+  try {
+    const pending = h.input("尚未提交的原文");
+    await h.toggle();
+    assert.ok(oldSignal?.aborted);
+    assert.equal(h.editor, "尚未提交的原文");
+    assert.equal(h.status, "译 off");
+    assert.equal(h.entries.filter((e) => e.customType === FAILURE).length, 0);
+    h.editor = "";
+    assert.deepEqual(await h.start("New prompt while off."), {
+      action: "continue",
+    });
+    await h.toggle(); // Re-enabling must not revive the old submission.
+    gate.resolve({ text: "Late translation", changed: true });
+    assert.deepEqual(await pending, { action: "handled" });
+    assert.equal(h.editor, "");
+    await h.turn();
+    await h.settle();
+    assert.equal(
+      outputs(h).length,
+      1,
+      "old cleanup must preserve the new task",
+    );
+    assert.equal(h.entries.filter((e) => e.customType === FAILURE).length, 0);
+  } finally {
+    gate.resolve({ text: "Late translation", changed: true });
+    await h.close();
+  }
+});
+
+test("cancelled input cannot overwrite a newer draft or clear a newer translation", async () => {
+  const first = deferred<Translation>();
+  const second = deferred<Translation>();
+  const h = await harness(async (_r, text) =>
+    text === "第一份" ? first.promise : second.promise,
+  );
+  try {
+    const old = h.input("第一份");
+    h.editor = "用户正在编辑的新草稿";
+    h.key("\u001b");
+    assert.equal(h.editor, "用户正在编辑的新草稿");
+    assert.match(h.notifications.at(-1)!, /已取消，未提交.*Ctrl\+Alt\+T/);
+    assert.equal(h.entries.filter((e) => e.customType === FAILURE).length, 0);
+    h.editor = "";
+    const current = h.input("第二份");
+    first.resolve({ text: "First", changed: true });
+    assert.deepEqual(await old, { action: "handled" });
+    assert.match(h.status, /^译 on [⠹⠸⠼⠴⠦⠧⠇⠏⠋⠙]$/);
+    second.resolve({ text: "Second", changed: true });
+    assert.deepEqual(await current, {
+      action: "transform",
+      text: "Second",
+      images: undefined,
+    });
+    assert.equal(h.status, "译 on");
+    assert.equal(h.editor, "");
+  } finally {
+    first.resolve({ text: "First", changed: true });
+    second.resolve({ text: "Second", changed: true });
+    await h.close();
+  }
+});
+
+test("a current switch never retroactively translates history or native and extension requests", async () => {
+  const h = await harness(undefined, { enabled: false });
+  try {
+    await h.start("An untransformed prompt.");
+    await h.turn();
+    await h.settle();
+    await h.toggle();
+    await h.emit("agent_settled");
+    await flushUI();
+    assert.equal(h.calls.length, 0);
+    for (const source of ["interactive", "extension"] as const) {
+      const prompt =
+        source === "interactive"
+          ? "/skill:review file"
+          : "Extension-generated task";
+      await h.input(prompt, { source });
+      await h.emit("before_agent_start", { prompt });
+      await h.emit("agent_start");
+      await h.turn();
+      await h.settle();
+    }
+    assert.equal(h.calls.length, 0);
+    assert.equal(outputs(h).length, 0);
   } finally {
     await h.close();
   }

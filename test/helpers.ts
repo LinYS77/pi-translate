@@ -284,6 +284,7 @@ export async function harness(
       await emit("agent_end");
       await emit("agent_before_settle", { outcome });
       await emit("agent_settled");
+      await flushUI(); // Allow immediately-resolving display jobs to finish independently.
     },
     async close() {
       await emit("session_shutdown");

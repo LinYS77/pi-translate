@@ -72,7 +72,7 @@ export default function (pi: ExtensionAPI) {
         new Text(
           theme.fg(
             "dim",
-            "/translate 中选择“恢复输入”后可手动重新提交；不会自动重试",
+            "Ctrl+Alt+T 或 /translate 中选择“恢复输入”，确认后手动提交",
           ),
           1,
           1,
