@@ -33,10 +33,15 @@ function registry(response: (context: Context) => Promise<AssistantMessage>) {
 test("request contains translation rules + ONE current text, no history/tools/images", async () => {
   const r = registry(async (context) =>
     assistant(
-      userText(context).replace(
-        "先检查原因，不要修改文件，也不要重新运行训练。",
-        "First inspect the cause. Do not modify files or rerun training.",
-      ),
+      userText(context)
+        .replace(
+          "先检查原因，不要修改文件，也不要重新运行训练。",
+          "First inspect the cause. Do not modify files or rerun training.",
+        )
+        .replace(
+          "按刚才第二种方案修改，但先不要运行训练。",
+          "Make changes according to the second approach mentioned earlier, but do not run training yet.",
+        ),
     ),
   );
   const result = await translate(
@@ -174,6 +179,15 @@ test("ordinary quoted prose is translated but its numbers remain protected", () 
   );
 });
 
+test("authorizing quoted prose does not authorize nested literal labels", () => {
+  const text = "她说“将按钮文字设为'保存'后继续。”";
+  const start = text.indexOf("“");
+  const p = protect(text, "en", [], [{ start, end: text.length }]);
+  assert.ok(p.prose.includes("将按钮文字设为"));
+  assert.ok(!p.prose.includes("保存"));
+  assert.equal(p.restore(p.masked), text);
+});
+
 test("mixed Chinese output cannot rewrite pre-existing Han text", () => {
   const p = protect("已完成。Warning: do not retry.", "zh");
   assert.equal(
@@ -212,6 +226,24 @@ for (const reason of [
     );
   });
 }
+test("provider timeouts explain the failure without exposing provider details or retrying", async () => {
+  const r = registry(async () => ({
+    ...assistant("", "error"),
+    errorMessage: "Request timed out. https://private.example?token=secret",
+  }));
+  await assert.rejects(
+    translate(r.instance, "请检查", "en", config),
+    (error: Error) => {
+      assert.match(error.message, /翻译服务请求超时/);
+      assert.ok(
+        !error.message.includes("private") && !error.message.includes("secret"),
+      );
+      return true;
+    },
+  );
+  assert.equal(r.contexts.length, 1);
+});
+
 test("empty output and tool calls are rejected", async () => {
   const empty = registry(async () => assistant(" "));
   await assert.rejects(

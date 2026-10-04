@@ -15,12 +15,21 @@ export interface Segment {
   judgment: "local" | "jev";
   role: "instruction" | "prose" | "uncertain";
   context: {
-    kind: "paragraph" | "quote" | "introduced";
+    kind:
+      | "paragraph"
+      | "quote"
+      | "introduced"
+      | "list-item"
+      | "heading"
+      | "table-cell";
     leadIn: string;
     followUp: string;
     paragraph: string;
+    inline?: boolean;
+    heading?: string;
   };
   literals: SourceRange[];
+  proseRanges?: SourceRange[];
   group: number;
 }
 
@@ -33,6 +42,7 @@ export function protect(
   text: string,
   direction: Direction,
   literals: readonly SourceRange[] = [],
+  proseRanges: readonly SourceRange[] = [],
 ) {
   const prefix = `PI_KEEP_${randomUUID().replaceAll("-", "")}_`;
   const spans = new Map<string, string>();
@@ -55,6 +65,8 @@ export function protect(
     ].join("|"),
     "gmu",
   );
+  // Authorization covers one span. Nested labels inside that prose stay literals.
+  let depth = 0;
   const replaceSpan = (span: string, ...args: unknown[]): string => {
     const offset = args.at(-2) as number;
     // Quotes around prose are not automatically literals. Labels and ambiguous short quotes are.
@@ -66,10 +78,17 @@ export function protect(
         );
       const prose =
         /\s/.test(span.slice(1, -1)) || /[。！？.!?]/.test(span.slice(1, -1));
-      if (!explicit && prose)
-        return (
-          span[0] + replaceWithin(span.slice(1, -1), offset + 1) + span.at(-1)
+      const authorized =
+        depth === 0 &&
+        proseRanges.some(
+          (r) => offset >= r.start && offset + span.length <= r.end,
         );
+      if (authorized || (!explicit && prose)) {
+        depth++;
+        const inner = replaceWithin(span.slice(1, -1), offset + 1);
+        depth--;
+        return span[0] + inner + span.at(-1);
+      }
     }
     const token = `${prefix}${spans.size}_END`;
     spans.set(token, span);
@@ -133,6 +152,13 @@ function localDecision(
 export function createTranslationPlan(text: string, direction: Direction) {
   const regions = direction === "en" ? inputRegions(text) : [];
   const segments: Segment[] = [];
+  const inlineCandidates = regions.filter(
+    (r) =>
+      r.inline &&
+      r.role === "uncertain" &&
+      han.test(text.slice(r.start, r.end)),
+  );
+  const inlineIds = new Map(inlineCandidates.map((r, i) => [r, `q${i}`]));
   let group = 0;
   // Mask for STRUCTURAL scanning only, keeping offsets/newlines. Preserved data cannot
   // open a fence/table or make an embedded instruction control the enclosing message.
@@ -147,17 +173,44 @@ export function createTranslationPlan(text: string, direction: Direction) {
     cursor = region.end;
   }
   scanText += text.slice(cursor);
-  const literalRanges = (start: number, end: number) =>
+  const literalRanges = (
+    start: number,
+    end: number,
+    decisions?: ReadonlyMap<string, "translate" | "keep">,
+  ) =>
     regions
-      .filter((r) => r.inline && r.start >= start && r.end <= end)
+      .filter(
+        (r) =>
+          r.inline &&
+          r.start >= start &&
+          r.end <= end &&
+          !(
+            inlineIds.has(r) &&
+            decisions?.get(inlineIds.get(r)!) === "translate"
+          ),
+      )
       .map((r) => ({ start: r.start - start, end: r.end - start }));
-  const safeContext = (start: number, end: number) => {
+  const translatedInline = (
+    start: number,
+    end: number,
+    decisions: ReadonlyMap<string, "translate" | "keep">,
+  ) =>
+    inlineCandidates
+      .filter(
+        (r) =>
+          r.start >= start &&
+          r.end <= end &&
+          decisions.get(inlineIds.get(r)!) === "translate",
+      )
+      .map((r) => ({ start: r.start - start, end: r.end - start }));
+  const safeContext = (start: number, end: number, focus?: InputRegion) => {
     let result = "",
       cursor = start;
     for (const r of regions) {
       if (r.end <= start || r.start >= end) continue;
       result +=
-        text.slice(cursor, Math.max(cursor, r.start)) + "[preserved material]";
+        text.slice(cursor, Math.max(cursor, r.start)) +
+        (r === focus ? "[candidate]" : "[preserved material]");
       cursor = Math.min(end, r.end);
     }
     return result + text.slice(cursor, end);
@@ -168,6 +221,7 @@ export function createTranslationPlan(text: string, direction: Direction) {
     groupId: number,
     paragraph: string,
     region?: InputRegion,
+    layout?: Pick<Segment["context"], "kind" | "heading">,
   ) => {
     const raw = text.slice(start, end);
     start += raw.length - raw.trimStart().length;
@@ -176,7 +230,11 @@ export function createTranslationPlan(text: string, direction: Direction) {
     const value = text.slice(start, end);
     const literals = literalRanges(start, end);
     const protectedValue = protect(value, direction, literals);
-    if (!protectedValue.needsTranslation) return;
+    if (
+      !protectedValue.needsTranslation &&
+      !inlineCandidates.some((r) => r.start >= start && r.end <= end)
+    )
+      return;
     // Only clear source-language prose is pinned. Short labels and mixed-language
     // terms still need semantic judgment; protected literals are not evidence.
     const clearOutput =
@@ -203,10 +261,15 @@ export function createTranslationPlan(text: string, direction: Direction) {
         leadIn: region?.leadIn ?? "",
         followUp: region?.followUp ?? "",
         paragraph,
+        ...layout,
       },
     });
   };
-  const prose = (start: number, end: number) => {
+  const prose = (
+    start: number,
+    end: number,
+    layout?: Pick<Segment["context"], "kind" | "heading">,
+  ) => {
     if (start >= end) return;
     const value = text.slice(start, end);
     const groupId = group++;
@@ -228,26 +291,38 @@ export function createTranslationPlan(text: string, direction: Direction) {
         (sentence && han.test(value) && /[A-Za-z]/.test(value)) ||
         boundary - begin >= 1600
       ) {
-        add(start + begin, start + boundary, groupId, paragraph);
+        add(
+          start + begin,
+          start + boundary,
+          groupId,
+          paragraph,
+          undefined,
+          layout,
+        );
         begin = boundary;
       }
     }
-    add(start + begin, end, groupId, paragraph);
+    add(start + begin, end, groupId, paragraph, undefined, layout);
   };
-  const paragraph = (start: number, end: number) => {
+  const paragraph = (
+    start: number,
+    end: number,
+    layout?: Pick<Segment["context"], "kind" | "heading">,
+  ) => {
     let cursor = start;
     for (const r of regions) {
       if (r.inline || r.end <= cursor || r.start >= end) continue;
-      prose(cursor, Math.min(end, r.start));
+      prose(cursor, Math.min(end, r.start), layout);
       cursor = Math.min(end, r.end);
     }
-    prose(cursor, end);
+    prose(cursor, end, layout);
   };
   let pending: { start: number; end: number } | undefined;
   const flush = () => {
     if (pending) paragraph(pending.start, pending.end);
     pending = undefined;
   };
+  let heading = "";
   let fence: { char: string; length: number } | undefined;
   for (const line of scanText.matchAll(/[^\n]*(?:\n|$)/g)) {
     if (!line[0]) continue;
@@ -267,6 +342,7 @@ export function createTranslationPlan(text: string, direction: Direction) {
     }
     if (marker) {
       flush();
+      heading = "";
       fence = { char: marker[1][0], length: marker[1].length };
       continue;
     }
@@ -288,6 +364,12 @@ export function createTranslationPlan(text: string, direction: Direction) {
       flush();
       const bodyStart = start + prefix.length;
       const body = scanText.slice(bodyStart, start + raw.length);
+      const kind = /(?<!\\)\|/.test(body)
+        ? "table-cell"
+        : /#{1,6}\s/.test(prefix)
+          ? "heading"
+          : "list-item";
+      const layout = { kind, heading } as const;
       let cell = 0,
         ticks = "";
       for (const m of body.matchAll(
@@ -297,17 +379,25 @@ export function createTranslationPlan(text: string, direction: Direction) {
           if (!ticks) ticks = m[0];
           else if (ticks === m[0]) ticks = "";
         } else if (m[0] === "|" && !ticks) {
-          paragraph(bodyStart + cell, bodyStart + m.index!);
+          paragraph(bodyStart + cell, bodyStart + m.index!, layout);
           cell = m.index! + 1;
         }
       }
-      paragraph(bodyStart + cell, start + raw.length);
-    } else if (pending) pending.end = start + raw.length;
-    else pending = { start, end: start + raw.length };
+      paragraph(bodyStart + cell, start + raw.length, layout);
+      if (kind === "heading")
+        heading = safeContext(bodyStart, start + raw.length).trim();
+    } else {
+      if (pending) pending.end = start + raw.length;
+      else pending = { start, end: start + raw.length };
+      heading = /[:：]\s*$/.test(raw)
+        ? safeContext(start, start + raw.length).trim()
+        : "";
+    }
   }
   flush();
   for (const r of regions)
-    if (r.role === "uncertain") add(r.start, r.end, group++, "", r);
+    if (r.role === "uncertain" && !r.inline)
+      add(r.start, r.end, group++, "", r);
   segments.sort((a, b) => a.start - b.start);
   segments.forEach((s, i) => {
     s.id = `s${i}`;
@@ -328,12 +418,37 @@ export function createTranslationPlan(text: string, direction: Direction) {
   });
   return {
     ...resultFor(segments),
+    // Judgment ranges may be children of an instruction. Execution ranges never overlap.
+    judgments: [
+      ...segments,
+      ...inlineCandidates.map((r): Segment => ({
+        id: inlineIds.get(r)!,
+        start: r.start,
+        end: r.end,
+        text: text.slice(r.start, r.end),
+        local: "keep",
+        judgment: "jev",
+        role: "uncertain",
+        literals: [],
+        group: -1,
+        context: {
+          kind: "quote",
+          inline: true,
+          leadIn: r.leadIn,
+          followUp: r.followUp,
+          paragraph: r.parent
+            ? safeContext(r.parent.start, r.parent.end, r)
+            : "",
+        },
+      })),
+    ],
     select(decisions: ReadonlyMap<string, "translate" | "keep">) {
       const units: Segment[] = [];
       for (const s of segments) {
         const decision =
           s.judgment === "local" ? s.local : (decisions.get(s.id) ?? s.local);
-        if (decision !== "translate") continue;
+        const proseRanges = translatedInline(s.start, s.end, decisions);
+        if (decision !== "translate" && !proseRanges.length) continue;
         const previous = units.at(-1);
         if (
           previous &&
@@ -344,10 +459,39 @@ export function createTranslationPlan(text: string, direction: Direction) {
         ) {
           previous.end = s.end;
           previous.text = text.slice(previous.start, s.end);
-          previous.literals = literalRanges(previous.start, s.end);
-        } else units.push({ ...s });
+          previous.literals = literalRanges(previous.start, s.end, decisions);
+          previous.proseRanges = translatedInline(
+            previous.start,
+            s.end,
+            decisions,
+          );
+        } else
+          units.push({
+            ...s,
+            literals: literalRanges(s.start, s.end, decisions),
+            proseRanges,
+          });
       }
-      return resultFor(units);
+      const requests: Segment[][] = [];
+      for (const s of units) {
+        const batch = requests.at(-1);
+        const previous = batch?.at(-1);
+        const gap = previous ? text.slice(previous.end, s.start) : "";
+        if (
+          direction === "en" &&
+          batch &&
+          batch.length < 8 &&
+          previous &&
+          s.context.kind === "list-item" &&
+          previous.context.kind === "list-item" &&
+          s.context.heading === previous.context.heading &&
+          /^[ \t]*(?:\r?\n)[ \t]*(?:[-*+]|\d+[.)])[ \t]+$/.test(gap) &&
+          s.end - batch[0].start <= 1600
+        )
+          batch.push(s);
+        else requests.push([s]);
+      }
+      return { ...resultFor(units), requests };
     },
   };
 }

@@ -9,6 +9,7 @@ export interface InputRegion extends SourceRange {
   followUp: string;
   /** Small inline task objects stay in their sentence as opaque literals. */
   inline: boolean;
+  parent?: SourceRange;
 }
 
 const pairs: Record<string, string> = {
@@ -32,7 +33,12 @@ const requestStart =
   /^(?:请|然后请|最后请|另外请|接下来请|再请|please\b|next,? please\b|finally,? please\b)/i;
 
 const taskHeading =
-  /任务|要求|约束|指令|操作步骤|requirements|constraints|instructions|task/i;
+  /任务|要求|约束|指令|操作步骤|回答格式|输出格式|注意事项|requirements|constraints|instructions|task/i;
+const literalHeading = /字面|literal/i;
+const listPrefix = /^[ \t]*(?:[-*+]|\d+[.)])[ \t]+/;
+const instructionHeading = (line: string) =>
+  /[:：]\s*$/.test(line) &&
+  (taskHeading.test(line) || literalHeading.test(line));
 const materialLabel =
   /^(?:(?:原始|实际|完整)?(?:原文|译文|报错|错误|日志|文本|代码)(?:信息|输出|内容)?|(?:(?:raw|original|translated|error)\s+)?(?:text|log|output|message|code|transcript|error))\s*[:：]$/i;
 
@@ -165,8 +171,18 @@ export function inputRegions(text: string): InputRegion[] {
     lead: string,
     inline = false,
     followUp = "",
+    parent?: SourceRange,
   ) => {
-    regions.push({ start, end, role, kind, leadIn: lead, followUp, inline });
+    regions.push({
+      start,
+      end,
+      role,
+      kind,
+      leadIn: lead,
+      followUp,
+      inline,
+      parent,
+    });
     coveredUntil = end;
   };
   for (let i = 0; i < lines.length; i++) {
@@ -194,24 +210,41 @@ export function inputRegions(text: string): InputRegion[] {
     if (!body.trim()) continue;
     if (/^(?: {4}|\t)/.test(body) && !/^\s*(?:[-*+]|\d+[.)])\s/.test(body))
       continue;
-    if (continuation && requestStart.test(body.trimStart())) {
-      // Only an explicit new request ends an unquoted material continuation.
+    const taskBoundary =
+      instructionHeading(visibleLead(body)) || /^\s*#{1,6}\s/.test(body);
+    if (
+      (taskBoundary && (!expectMaterial || expectedRole === "uncertain")) ||
+      (continuation && requestStart.test(body.trimStart()))
+    ) {
+      // A new instruction section cannot inherit a previous material scope.
       leadIn = "";
       continuation = false;
+      expectMaterial = false;
     }
     const colon = body.search(/[:：]/);
     const lead = visibleLead(
       colon >= 0 ? body.slice(0, colon + 1).trim() : body.trim(),
     );
-    const knownMaterial = introducesMaterial(lead);
+    const knownMaterial = !taskBoundary && introducesMaterial(lead);
     const ambiguousLead =
+      !taskBoundary &&
+      !listPrefix.test(body) &&
       colon >= 0 &&
       !taskHeading.test(lead) &&
       !/\[(?:quoted material|inline code)\]/.test(lead) &&
       (!requestStart.test(lead) || action.test(lead));
+    // A reference in a larger task paragraph is not a delimiter. Without a colon,
+    // require a short, direct introduction ending in a material noun/preservation request.
+    const directIntroduction =
+      following.test(lead) &&
+      !/[，,。！？.!?；;]/.test(lead.replace(/[。.!?]$/, "")) &&
+      (/(?:内容|原文|文本|文字|日志|报错|代码|这段|text|passage|log|code|below)[。.!?]?$/i.test(
+        lead,
+      ) ||
+        preservation.test(lead));
     if (
       !expectMaterial &&
-      ((knownMaterial && (colon >= 0 || following.test(lead))) || ambiguousLead)
+      ((knownMaterial && (colon >= 0 || directIntroduction)) || ambiguousLead)
     ) {
       leadIn = lead;
       expectMaterial = true;
@@ -307,8 +340,9 @@ export function inputRegions(text: string): InputRegion[] {
         known ? "material" : "uncertain",
         "quote",
         prefix || previous,
-        inline && known,
+        inline,
         suffix,
+        inline ? { start, end: line.end } : undefined,
       );
       at = end - 1;
     }

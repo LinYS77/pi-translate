@@ -5,6 +5,10 @@ import { translate } from "../src/translator.ts";
 import { createTranslationPlan } from "../src/translation-plan.ts";
 import { defaults } from "../src/config.ts";
 import { routingCases } from "./fixtures/routing.ts";
+import {
+  complexPrompt,
+  preservedInComplexPrompt,
+} from "./fixtures/complex-prompt.ts";
 import { FAILURE, NOTICE, OUTPUT } from "../src/extension.ts";
 import {
   assistant,
@@ -51,6 +55,137 @@ for (const example of routingCases) {
   });
 }
 
+test("the full experiment prompt translates instruction coverage while preserving every task object", async () => {
+  for (const margin of ["", " ", "   "])
+    for (const crlf of [false, true])
+      for (const decisionMode of ["local", "jev"] as const) {
+        const layout = (s: string) =>
+          s
+            .split("\n")
+            .map((line) => (line ? margin + line : line))
+            .join(crlf ? "\r\n" : "\n");
+        const source = layout(complexPrompt);
+        const r = service((text) =>
+          assistant(text.replace(/\p{Script=Han}+/gu, "Translated")),
+        );
+        const registry = {
+          ...r,
+          findOfType: () => ({
+            provider: "typesafe",
+            id: "jev-latest",
+            contextWindow: 64000,
+          }),
+          classify: async (
+            _m: unknown,
+            ctx: { questions: Record<string, unknown> },
+          ) => {
+            assert.ok(
+              !JSON.stringify(ctx).includes("实验编号") &&
+                !JSON.stringify(ctx).includes("直接计算指数"),
+            );
+            return {
+              stopReason: "stop",
+              answers: Object.fromEntries(
+                Object.keys(ctx.questions).map((id) => [
+                  id,
+                  {
+                    type: "choice",
+                    choice: "uncertain",
+                    confidence: 1,
+                    probabilities: { prose: 0, material: 0, uncertain: 1 },
+                  },
+                ]),
+              ),
+            };
+          },
+        };
+        const result = await translate(registry as never, source, "en", {
+          ...config,
+          decisionMode,
+          classifierProvider: "typesafe",
+          classifierModel: "jev-latest",
+        });
+        assert.equal(result.status, "complete");
+        let instructions = result.text;
+        for (const literal of preservedInComplexPrompt) {
+          const expected = literal.includes("\n")
+            ? layout(literal).slice(margin.length)
+            : literal;
+          assert.ok(
+            instructions.includes(expected),
+            `lost literal: ${literal.slice(0, 30)}`,
+          );
+          instructions = instructions.replace(expected, "");
+        }
+        assert.ok(
+          !/\p{Script=Han}/u.test(instructions),
+          `untranslated instruction (${margin.length} spaces, ${decisionMode}): ${instructions}`,
+        );
+        assert.ok(
+          r.texts.every(
+            (t) => !t.includes("实验编号") && !t.includes("直接计算指数"),
+          ),
+        );
+        assert.ok(
+          r.texts.some((t) => t.includes("一个包含") && t.includes("的表格")),
+        );
+      }
+});
+
+test("a reference to later material cannot capture intervening instructions and constraints", () => {
+  const instructions = "先完成静态分析，不要执行代码，不要读取本地文件。";
+  const constraint = "当前 temperature = 0.01；请解释它可能产生的影响。";
+  const source = `请审查下面这个分类实验，判断 loss 出现 NaN 的可能原因，并给出最小修改建议。请使用中文说明。\n\n${instructions}\n\n实验约束：\n- ${constraint}\n\n原始记录：\n“不要执行代码，这是记录中的原话。”\n\n最后给出修改建议。`;
+  const plan = createTranslationPlan(source, "en");
+  const selected = plan
+    .select(new Map())
+    .segments.map((s) => s.text)
+    .join("\n");
+  assert.ok(selected.includes(instructions));
+  assert.ok(selected.includes(constraint));
+  assert.ok(selected.includes("最后给出修改建议"));
+  assert.ok(!selected.includes("这是记录中的原话"));
+  assert.equal(plan.assemble(new Map()), source);
+});
+
+test("instruction headings end material continuation and literal values do not hide their list instructions", () => {
+  const source =
+    "原文：\n记录尚未确认。\n\n实验约束：\n- 不要运行训练。\n\n需要核对的字面内容：\n- Linux 路径：`./runs/实验 A/metrics.json`\n- 界面按钮文字必须保持为“保存并继续”，不能改成 Save and Continue。\n- 错误码 `E_NUMERIC_001` 必须逐字保留。";
+  const plan = createTranslationPlan(source, "en");
+  const selected = plan
+    .select(new Map())
+    .segments.map((s) => s.text)
+    .join("\n");
+  for (const instruction of [
+    "实验约束",
+    "不要运行训练",
+    "Linux 路径",
+    "界面按钮文字必须保持为",
+    "必须逐字保留",
+  ])
+    assert.ok(selected.includes(instruction), instruction);
+  assert.ok(!selected.includes("记录尚未确认"));
+});
+
+test("instruction-like headings inside explicitly introduced plain material remain data", () => {
+  const material = "实验约束：\n- 不要执行代码。\n任务要求：\n- 保留原始记录。";
+  const source = `原文：\n${material}\n\n请总结原文。`;
+  const plan = createTranslationPlan(source, "en");
+  const selected = plan
+    .select(new Map())
+    .segments.map((s) => s.text)
+    .join("\n");
+  assert.ok(
+    !selected.includes("不要执行代码") && !selected.includes("保留原始记录"),
+  );
+  assert.ok(selected.includes("请总结原文"));
+  assert.ok(
+    plan
+      .assemble(new Map(plan.segments.map((s) => [s.id, "Translated."])))
+      .includes(material),
+  );
+});
+
 test("quoted preservation wording cannot turn the next user instruction into material", () => {
   const plan = createTranslationPlan(
     "她提到了“下面这段不要翻译”：\n\n请分析实际原因。",
@@ -61,6 +196,219 @@ test("quoted preservation wording cannot turn the next user instruction into mat
       (s) => s.text === "请分析实际原因。" && s.local === "translate",
     ),
   );
+});
+
+test("an ambiguous inline quote stays inside one complete translation sentence", async () => {
+  const quote = "“输入条件 / 当前行为 / 建议行为”";
+  const r = service((text) =>
+    assistant(
+      text.replace("一个包含", "A table containing ").replace("的表格", ""),
+    ),
+  );
+  const result = await translate(
+    r as never,
+    `3. 一个包含${quote}的表格`,
+    "en",
+    config,
+  );
+  assert.equal(r.texts.length, 1);
+  assert.ok(r.texts[0].includes("一个包含") && r.texts[0].includes("的表格"));
+  assert.equal(result.text, `3. A table containing ${quote}`);
+});
+
+test("list items receive their current section heading as context without translating the heading twice", async () => {
+  const contexts: Context[] = [];
+  const r = service((text) =>
+    assistant(
+      text.includes("按这个顺序")
+        ? "Answer in this order:"
+        : "The English translation of the specified passage.",
+    ),
+  );
+  const stream = r.streamSimple;
+  r.streamSimple = (m, ctx, options) => {
+    contexts.push(ctx);
+    return stream(m, ctx, options);
+  };
+  const result = await translate(
+    r as never,
+    "请按这个顺序回答：\n5. 指定原文的英文翻译。",
+    "en",
+    config,
+  );
+  assert.equal(
+    result.text,
+    "Answer in this order:\n5. The English translation of the specified passage.",
+  );
+  assert.match(contexts[1].systemPrompt!, /list item/);
+  assert.ok(contexts[1].systemPrompt!.includes("请按这个顺序回答："));
+  assert.equal(userText(contexts[1]), "指定原文的英文翻译。");
+});
+
+test("list context redacts inline literals and never includes the previous source block", async () => {
+  const contexts: Context[] = [];
+  const r = service((text) =>
+    assistant(text.replace(/\p{Script=Han}+/gu, "Translated")),
+  );
+  const stream = r.streamSimple;
+  r.streamSimple = (m, ctx, options) => {
+    contexts.push(ctx);
+    return stream(m, ctx, options);
+  };
+  const source =
+    "原文：\n“原始记录秘密。”\n\n任务要求，请保留“指定标签”和 `secret_code`，按下面的顺序回答：\n1. 已知原因；\n2. 未知原因。";
+  await translate(r as never, source, "en", config);
+  assert.ok(
+    contexts.every(
+      (ctx) =>
+        !JSON.stringify(ctx).includes("原始记录秘密") &&
+        !JSON.stringify(ctx).includes("指定标签") &&
+        !JSON.stringify(ctx).includes("secret_code"),
+    ),
+  );
+});
+
+test("adjacent instruction list items share context but keep their original numbering and source positions", async () => {
+  const r = service((text) => {
+    const payload = JSON.parse(text) as {
+      translations: { id: string; text: string }[];
+    };
+    assert.equal(payload.translations.length, 3);
+    return assistant(
+      JSON.stringify({
+        translations: payload.translations.map((item, i) => ({
+          ...item,
+          text: [
+            "Confirmed issues;",
+            "Missing evidence;",
+            "The English translation of the specified passage.",
+          ][i],
+        })),
+      }),
+    );
+  });
+  const result = await translate(
+    r as never,
+    "1. 已确认的问题；\r\n2. 缺少的证据；\r\n5. 指定原文的英文翻译。",
+    "en",
+    config,
+  );
+  assert.equal(r.texts.length, 1);
+  assert.equal(
+    result.text,
+    "1. Confirmed issues;\r\n2. Missing evidence;\r\n5. The English translation of the specified passage.",
+  );
+});
+
+test("invalid list batch replies cannot submit partial input or move protected values between items", async () => {
+  for (const corruption of [
+    "missing",
+    "duplicate",
+    "unknown",
+    "empty",
+    "swapped-literals",
+    "untranslated",
+    "escaped-untranslated",
+    "invalid-json",
+  ]) {
+    const r = service((text) => {
+      const payload = JSON.parse(text) as {
+        translations: { id: string; text: string }[];
+      };
+      const rows = payload.translations.map((item) => ({
+        ...item,
+        text: item.text.replace(/\p{Script=Han}+/gu, "Keep"),
+      }));
+      if (corruption === "missing") rows.pop();
+      if (corruption === "duplicate") rows[1].id = rows[0].id;
+      if (corruption === "unknown") rows[1].id = "bogus";
+      if (corruption === "empty") rows[1].text = "";
+      if (corruption === "swapped-literals")
+        [rows[0].text, rows[1].text] = [rows[1].text, rows[0].text];
+      if (
+        corruption === "untranslated" ||
+        corruption === "escaped-untranslated"
+      )
+        rows[1].text = payload.translations[1].text;
+      if (corruption === "escaped-untranslated")
+        return assistant(
+          JSON.stringify({ translations: rows }).replace(
+            /\p{Script=Han}/gu,
+            (char) => "\\u" + char.charCodeAt(0).toString(16),
+          ),
+        );
+      return assistant(
+        corruption === "invalid-json"
+          ? "malformed"
+          : JSON.stringify({ translations: rows }),
+      );
+    });
+    const h = await harness(translate);
+    Object.assign(h.ctx.modelRegistry, r);
+    const original = "1. 保留 `first`。\n2. 保留 `second`。";
+    try {
+      assert.deepEqual(
+        await h.input(original),
+        { action: "handled" },
+        corruption,
+      );
+      assert.equal(h.editor, original);
+      assert.equal(r.texts.length, 2);
+      assert.equal(h.entries.filter((e) => e.customType === FAILURE).length, 1);
+    } finally {
+      await h.close();
+    }
+  }
+});
+
+test("list batch repair is bounded and out-of-order IDs are restored to the original positions", async () => {
+  const r = service((text, attempt) => {
+    const payload = JSON.parse(text) as {
+      translations: { id: string; text: string }[];
+    };
+    if (attempt === 1) return assistant('{"translations":[]}');
+    return assistant(
+      JSON.stringify({
+        translations: payload.translations
+          .map((item, i) => ({
+            ...item,
+            text: i === 0 ? "First result." : "Second result.",
+          }))
+          .reverse(),
+      }),
+    );
+  });
+  const result = await translate(
+    r as never,
+    "- 第一项。\n  - 第二项。",
+    "en",
+    config,
+  );
+  assert.equal(result.text, "- First result.\n  - Second result.");
+  assert.equal(r.texts.length, 2);
+});
+
+test("list grouping never crosses preserved material, target-language items, tables or separate paragraphs", () => {
+  for (const separator of [
+    "\n\n",
+    "\n- Keep unchanged.\n",
+    "\n```txt\n原文\n```\n",
+    "\n| 名称 | 值 |\n|---|---|\n",
+  ]) {
+    const p = createTranslationPlan(
+      `- 请检查。${separator}- 请解释。`,
+      "en",
+    ).select(new Map());
+    assert.ok(
+      p.requests.every(
+        (items) =>
+          !(
+            items.some((s) => s.text.includes("请检查")) &&
+            items.some((s) => s.text.includes("请解释"))
+          ),
+      ),
+    );
+  }
 });
 
 test("inline task objects stay in their instruction sentence even when the action follows the quote", async () => {
@@ -556,6 +904,32 @@ test("short English warnings translate while existing Chinese sentences are not 
   );
   assert.equal(result.text, "已完成。不要重试。\n\n停止");
   assert.ok(r.texts.every((text) => !text.includes("已完成")));
+});
+
+test("partial Chinese instructions outside placeholders are rejected without rejecting protected Chinese labels", async () => {
+  const r = service((text) => assistant(text.replace("请检查", "Inspect ")));
+  await assert.rejects(
+    translate(r as never, "请检查“保存”按钮，但不要修改文件。", "en", config),
+    /任务说明未翻译完整/,
+  );
+  assert.equal(r.texts.length, 2);
+  assert.ok(r.texts.every((t) => !t.includes("保存")));
+});
+
+test("an unchanged task instruction is repaired once, never silently submitted as a successful translation", async () => {
+  for (const repair of [true, false]) {
+    const r = service((text, attempt) =>
+      assistant(
+        repair && attempt === 2
+          ? text.replace("不要修改", "Do not modify ")
+          : text,
+      ),
+    );
+    const request = translate(r as never, "不要修改 `label`。", "en", config);
+    if (repair) assert.equal((await request).text, "Do not modify  `label`。");
+    else await assert.rejects(request, /任务说明未翻译/);
+    assert.equal(r.texts.length, 2);
+  }
 });
 
 test("input failure after a successful segment blocks all submission and preserves original", async () => {

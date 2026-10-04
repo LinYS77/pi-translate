@@ -427,6 +427,67 @@ test("classifier internal timeout falls back within the original operation deadl
   assert.equal(h.chats.length, 1);
 });
 
+test("Jev judges only an inline ambiguity while translation keeps its entire host sentence", async () => {
+  const quote = "“情况正在改善”";
+  for (const englishHost of [false, true])
+    for (const selected of ["prose", "material", "uncertain"] as const) {
+      const h = setup((ctx) => {
+        const segments = ctx.state.segments as {
+          id: string;
+          text: string;
+          placement: string;
+          paragraph: string;
+        }[];
+        assert.equal(segments.length, 1);
+        assert.equal(segments[0].text, quote);
+        assert.equal(segments[0].placement, "inline");
+        assert.ok(
+          segments[0].paragraph.includes(englishHost ? "She said" : "她说"),
+        );
+        assert.ok(segments[0].paragraph.includes("[candidate]"));
+        return {
+          answers: {
+            [segments[0].id]: {
+              type: "choice",
+              choice: selected,
+              confidence: 1,
+              probabilities: {
+                prose: selected === "prose" ? 1 : 0,
+                material: selected === "material" ? 1 : 0,
+                uncertain: selected === "uncertain" ? 1 : 0,
+              },
+            },
+          },
+        };
+      });
+      const sent: string[] = [];
+      h.registry.streamSimple = (_m, ctx) => {
+        const text = userText(ctx);
+        sent.push(text);
+        return {
+          result: async () =>
+            assistant(
+              text
+                .replace("她说", "She said ")
+                .replace("情况正在改善", "Things are improving"),
+            ),
+        } as ReturnType<ModelRegistry["streamSimple"]>;
+      };
+      const source = `${englishHost ? "She said " : "她说"}${quote}.`;
+      const result = await translate(h.registry, source, "en", config);
+      assert.equal(h.classifications.length, 1);
+      assert.equal(
+        result.text,
+        `She said ${selected === "prose" ? "“Things are improving”" : quote}.`,
+      );
+      assert.equal(sent.length, englishHost && selected !== "prose" ? 0 : 1);
+      assert.equal(
+        sent.some((text) => text.includes("情况正在改善")),
+        selected === "prose",
+      );
+    }
+});
+
 test("Jev gets the role and lead-in for an ambiguous quote, while input instructions cannot be skipped", async () => {
   const quote = "“这是一段普通叙述，还没有给出结论。”";
   const h = setup((context) => {
